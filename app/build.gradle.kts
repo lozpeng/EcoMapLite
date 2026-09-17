@@ -123,6 +123,6 @@ dependencies {
     //implementation(libs.combolite.core)
 
     // 插件核心库 本地依赖方式
-    implementation(projects.comboLiteCore)
+    implementation(projects.core)
     implementation(projects.dependencies)
 }

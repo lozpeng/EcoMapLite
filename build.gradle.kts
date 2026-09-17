@@ -30,11 +30,11 @@ plugins {
 
 aar2apk {
     modules {
-        module(":sample-plugin:common")
-        module(":sample-plugin:home")
-        module(":sample-plugin:guide")
-        module(":sample-plugin:example")
-        module(":sample-plugin:setting")
+        module(":plugins:common")
+        module(path = ":plugins:home")
+        module(":plugins:guide")
+        module(":plugins:example")
+        module(":plugins:setting")
     }
 
     // 配置签名信息

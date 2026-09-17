@@ -23,7 +23,7 @@ plugins {
 }
 
 android {
-    namespace = "com.combo.plugin.sample.example"
+    namespace = "com.combo.plugin.sample.setting"
     compileSdk = 36
 
     defaultConfig {
@@ -53,20 +53,14 @@ android {
     }
     buildFeatures {
         compose = true
-        viewBinding = true
-    }
-    externalNativeBuild {
-        cmake {
-            path("src/main/cpp/CMakeLists.txt")
-        }
     }
 }
 
 dependencies {
-    implementation(projects.dependencies)
+    compileOnly(projects.dependencies)
     // 插件核心库 远程依赖方式
 //    compileOnly(libs.combolite.core)
     // 插件核心库 本地依赖方式
-    compileOnly(projects.comboLiteCore)
-    compileOnly(projects.samplePlugin.common)
+    compileOnly(projects.core)
+    compileOnly(projects.plugins.common)
 }
