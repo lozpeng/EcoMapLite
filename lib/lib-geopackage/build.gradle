@@ -1,0 +1,115 @@
+plugins {
+    alias libs.plugins.androidLibrary
+    alias libs.plugins.compose.compiler
+}
+
+group = "mil.nga.geopackage"
+base {
+    archivesName = project.getName()
+}
+version = "6.7.5"
+
+android {
+    namespace 'mil.nga.geopackage'
+    compileSdk = 36
+
+    defaultConfig {
+        minSdk = 26
+        targetSdk = 36
+        multiDexEnabled true
+        versionCode 1
+        versionName version
+
+        javaCompileOptions {
+            annotationProcessorOptions {
+                arguments = [moduleName: project.getName()]
+            }
+        }
+        consumerProguardFiles "proguard-rules.pro"
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+        coreLibraryDesugaringEnabled true
+    }
+
+    buildFeatures {
+        viewBinding = true
+        compose = true
+    }
+
+    buildTypes {
+        debug {
+            minifyEnabled false
+            shrinkResources false
+            // ✅ 修复：使用 proguard-android-optimize.txt
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        release {
+            minifyEnabled false
+            shrinkResources false
+            // ✅ 修复：使用 proguard-android-optimize.txt
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    signingConfigs {
+        var keyFile = file(rootProject.file("plugins/ecomap.jks").absolutePath)
+        debug {
+            storeFile keyFile
+            storePassword "ani9772"
+            keyAlias "ecomap"
+            keyPassword "123456"
+        }
+        release {
+            storeFile keyFile
+            storePassword "ani9772"
+            keyAlias "ecomap"
+            keyPassword "123456"
+        }
+    }
+
+    packagingOptions {
+        resources {
+            excludes += [
+                    '/META-INF/{AL2.0,LGPL2.1}',
+                    '/META-INF/DEPENDENCIES',
+                    '/META-INF/LICENSE',
+                    '/META-INF/NOTICE'
+            ]
+        }
+    }
+}
+
+dependencies {
+    coreLibraryDesugaring libs.desugar.jdk.libs
+
+    implementation libs.androidx.ktx
+    implementation libs.androidx.lifecycle.runtime.ktx
+    implementation libs.androidx.activity.compose
+
+    implementation platform(libs.androidx.compose.bom)
+
+    implementation libs.maplibre.compose
+
+    implementation libs.timber
+
+    // ===== MapLibre 相关 =====
+    api 'androidx.documentfile:documentfile:1.0.1'
+    api 'com.j256.ormlite:ormlite-android:5.1'
+
+    // GeoPackage Core - 排除冲突的 ORMLite 依赖
+    api('mil.nga.geopackage:geopackage-core:6.6.7') {
+        exclude module: 'ormlite-core'
+        exclude group: 'com.j256.ormlite'
+    }
+
+    api 'ar.com.hjg:pngj:2.1.0'
+    api 'mil.nga:tiff:3.0.0'
+    api 'mil.nga:sqlite-android:3450200'
+
+    // ===== 可选：添加测试依赖 =====
+    testImplementation libs.junit
+    testImplementation libs.kotlinx.coroutines.test
+}

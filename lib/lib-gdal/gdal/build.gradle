@@ -1,0 +1,65 @@
+import org.gradle.internal.jvm.Jvm
+
+plugins {
+    id 'com.android.library'
+}
+
+android {
+    namespace 'com.example.gdal'
+    compileSdk 33
+
+    defaultConfig {
+        minSdk 21
+        targetSdk 33
+
+        consumerProguardFiles "consumer-rules.pro"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    libraryVariants.all { variant ->
+        def ndkDir = android.ndkDirectory
+        def apiVersion = 21
+        def javaHome = Jvm.current().getJavaHome()
+
+        if (variant.getName().equals("release")) {
+            task BuildGDALNative_Release(type: Exec) {
+                commandLine 'bash', "build_cpp.sh", ndkDir, apiVersion, javaHome, "Release"
+            }
+        } else if (variant.getName().equals("debug")) {
+            task BuildGDALNative_Debug(type: Exec) {
+                commandLine 'bash', "build_cpp.sh", ndkDir, apiVersion, javaHome, "Debug"
+            }
+        }
+    }
+
+    project.tasks.whenTaskAdded { task ->
+        if (task.name == "assembleRelease") {
+            task.dependsOn "BuildGDALNative_Release"
+        } else if (task.name == "assembleDebug") {
+            task.dependsOn "BuildGDALNative_Debug"
+        } else if (task.name == "BuildGDALNative_Release"
+                || task.name == "BuildGDALNative_Debug") {
+            task.dependsOn "cleanJni"
+        }
+    }
+
+    task cleanJni(type: Delete) {
+        delete "libs"
+        delete "src/main/jniLibs"
+    }
+    clean.dependsOn cleanJni
+}
+
+dependencies {
+    implementation fileTree(dir: 'libs', include: ['*.jar'])
+}

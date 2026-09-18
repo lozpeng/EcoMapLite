@@ -1,61 +1,84 @@
-// 启用类型安全的项目访问器功能预览
+import java.io.File
+
 enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
 
 includeBuild("build-logic")
 
 pluginManagement {
+    val agpVersion: String = run {
+        val toml = File("gradle/libs.versions.toml")
+        check(toml.exists()) { "libs.versions.toml not found" }
+        Regex("""^\s*agp\s*=\s*"([^"]+)"""", RegexOption.MULTILINE)
+            .find(toml.readText())?.groupValues?.get(1)
+            ?: error("Cannot find 'agp' in libs.versions.toml")
+    }
+
     repositories {
-        google {
+        maven("https://maven.aliyun.com/repository/google") {
             content {
                 includeGroupByRegex("com\\.android.*")
                 includeGroupByRegex("com\\.google.*")
                 includeGroupByRegex("androidx.*")
             }
         }
+        maven("https://maven.aliyun.com/repository/gradle-plugin")
+        maven("https://maven.aliyun.com/repository/public")
+        google()
         mavenCentral()
         gradlePluginPortal()
-        maven {
-            url = uri("https://maven.aliyun.com/repository/public")
-            content {
-                includeGroupByRegex(".*") // 从阿里云获取所有其他插件
-            }
-        }
-        maven("https://oss.sonatype.org/content/repositories/snapshots/") {
-            mavenContent {
-                snapshotsOnly()
-            }
-        }
+    }
+
+    plugins {
+        id("com.android.settings") version agpVersion apply false
     }
 }
+
+plugins {
+    id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
+    id("com.android.settings")
+}
+
+fun readTomlVersionInt(key: String): Int {
+    val toml = File("gradle/libs.versions.toml")
+    val value = Regex("""^\s*${Regex.escape(key)}\s*=\s*"([^"]+)"""", RegexOption.MULTILINE)
+        .find(toml.readText())?.groupValues?.get(1)
+        ?: error("Version '$key' not found in libs.versions.toml")
+    return value.toInt()
+}
+
+android {
+    compileSdk { version = release(readTomlVersionInt("complySdk")) }
+    minSdk { version = release(readTomlVersionInt("minSdk")) }
+    targetSdk { version = release(readTomlVersionInt("complySdk")) }
+}
+
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
+        maven("https://maven.aliyun.com/repository/google") {
+            content {
+                includeGroupByRegex("com\\.android.*")
+                includeGroupByRegex("com\\.google.*")
+                includeGroupByRegex("androidx.*")
+            }
+        }
+        maven("https://maven.aliyun.com/repository/public")
         google()
         mavenCentral()
-        maven {
-            url = uri("https://maven.aliyun.com/repository/public")
-            content {
-                includeGroupByRegex(".*") // 尝试从阿里云获取所有其他依赖
-            }
-        }
-        maven { url = uri("https://jitpack.io") }
-
-        maven("https://oss.sonatype.org/content/repositories/snapshots/") {
-            mavenContent {
-                snapshotsOnly()
-            }
-        }
+        maven("https://jitpack.io")
     }
 }
 
 rootProject.name = "EcoMapLite"
 include(":app")
 include(":dependencies")
-// 插件框架模块
 include(":core")
+include(":lib:lib-gdal")
+include(":lib:lib-geokori")
+include(":lib:lib-gps")
+include(":ui:ui-geokori")
 include(":plugins:common")
 include(":plugins:home")
 include(":plugins:guide")
-include(":plugins:sample")
 include(":plugins:setting")
 include(":plugins:example")

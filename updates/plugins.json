@@ -1,13 +1,29 @@
 {
   "plugins": [
     {
+      "id": "org.cwcc.open.plugin.ani",
+      "name": "野生动植物保护管理插件",
+      "description": "实现野生动植物保护管理功能。",
+      "versions": [
+        {
+          "version": "1.0.1",
+          "downloadUrl": "http://8.152.157.180/geokori/plugins/animonitor-1.0.1.apk",
+          "releaseDate": "2025-09-14",
+          "changelog": [
+            "使用ComboLite插件化框架2.0.0。",
+            "该插件将不再兼容ComboLite插件化框架1.0.0。"
+          ]
+        }
+      ]
+    },
+    {
       "id": "com.combo.plugin.sample.common",
       "name": "公共模块",
       "description": "提供公共模块，包含基础功能和工具类。",
       "versions": [
         {
           "version": "1.0.1",
-          "downloadUrl": "https://raw.githubusercontent.com/lnzz123/ComboLite/refs/heads/master/updates/plugins/common-1.0.1.apk",
+          "downloadUrl": "http://8.152.157.180/geokori/plugins/common-1.0.1.apk",
           "releaseDate": "2025-09-14",
           "changelog": [
             "使用ComboLite插件化框架2.0.0。",
@@ -16,7 +32,7 @@
         },
         {
           "version": "1.0.0",
-          "downloadUrl": "https://raw.githubusercontent.com/lnzz123/ComboLite/refs/heads/master/updates/plugins/common-1.0.0.apk",
+          "downloadUrl": "http://8.152.157.180/geokori/plugins/common-1.0.0.apk",
           "releaseDate": "2025-08-30",
           "changelog": [
             "初始版本发布。"
@@ -31,7 +47,7 @@
       "versions": [
         {
           "version": "1.0.1",
-          "downloadUrl": "https://raw.githubusercontent.com/lnzz123/ComboLite/refs/heads/master/updates/plugins/home-1.0.1.apk",
+          "downloadUrl": "http://8.152.157.180/geokori/plugins/home-1.0.1.apk",
           "releaseDate": "2025-09-14",
           "changelog": [
             "使用ComboLite插件化框架2.0.0。",
@@ -40,7 +56,7 @@
         },
         {
           "version": "1.0.0",
-          "downloadUrl": "https://raw.githubusercontent.com/lnzz123/ComboLite/refs/heads/master/updates/plugins/home-1.0.0.apk",
+          "downloadUrl": "http://8.152.157.180/geokori/plugins/home-1.0.0.apk",
           "releaseDate": "2025-08-30",
           "changelog": [
             "初始版本发布。"
@@ -55,7 +71,7 @@
       "versions": [
         {
           "version": "1.0.3",
-          "downloadUrl": "https://raw.githubusercontent.com/lnzz123/ComboLite/refs/heads/master/updates/plugins/example-1.0.3.apk",
+          "downloadUrl": "http://8.152.157.180/geokori/plugins/example-1.0.3.apk",
           "releaseDate": "2025-09-14",
           "changelog": [
             "使用ComboLite插件化框架2.0.0。",
@@ -64,7 +80,7 @@
         },
         {
           "version": "1.0.2",
-          "downloadUrl": "https://raw.githubusercontent.com/lnzz123/ComboLite/refs/heads/master/updates/plugins/example-1.0.2.apk",
+          "downloadUrl": "http://8.152.157.180/geokori/plugins/example-1.0.2.apk",
           "releaseDate": "2025-08-31",
           "changelog": [
             "调整Activity示例页面列表样式。",
@@ -73,7 +89,7 @@
         },
         {
           "version": "1.0.1",
-          "downloadUrl": "https://raw.githubusercontent.com/lnzz123/ComboLite/refs/heads/master/updates/plugins/example-1.0.1.apk",
+          "downloadUrl": "http://8.152.157.180/geokori/plugins/example-1.0.1.apk",
           "releaseDate": "2025-08-30",
           "changelog": [
             "初始版本发布。"
@@ -88,7 +104,7 @@
       "versions": [
         {
           "version": "1.0.1",
-          "downloadUrl": "https://raw.githubusercontent.com/lnzz123/ComboLite/refs/heads/master/updates/plugins/guide-1.0.1.apk",
+          "downloadUrl": "http://8.152.157.180/geokori/plugins/guide-1.0.1.apk",
           "releaseDate": "2025-09-14",
           "changelog": [
             "使用ComboLite插件化框架2.0.0。",
@@ -97,7 +113,7 @@
         },
         {
           "version": "1.0.0",
-          "downloadUrl": "https://raw.githubusercontent.com/lnzz123/ComboLite/refs/heads/master/updates/plugins/guide-1.0.0.apk",
+          "downloadUrl": "http://8.152.157.180/geokori/plugins/guide-1.0.0.apk",
           "releaseDate": "2025-08-30",
           "changelog": [
             "初始版本发布。"
@@ -112,7 +128,7 @@
       "versions": [
         {
           "version": "1.0.1",
-          "downloadUrl": "https://raw.githubusercontent.com/lnzz123/ComboLite/refs/heads/master/updates/plugins/setting-1.0.1.apk",
+          "downloadUrl": "http://8.152.157.180/geokori/plugins/setting-1.0.1.apk",
           "releaseDate": "2025-09-14",
           "changelog": [
             "使用ComboLite插件化框架2.0.0。",
@@ -121,7 +137,7 @@
         },
         {
           "version": "1.0.0",
-          "downloadUrl": "https://raw.githubusercontent.com/lnzz123/ComboLite/refs/heads/master/updates/plugins/setting-1.0.0.apk",
+          "downloadUrl": "http://8.152.157.180/geokori/plugins/setting-1.0.0.apk",
           "releaseDate": "2025-08-30",
           "changelog": [
             "初始版本发布。"

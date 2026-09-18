@@ -43,7 +43,7 @@ dependencies {
     // ========== Compose相关库 ==========
     api(libs.androidx.activity.compose)
     api(libs.androidx.navigation.compose)
-    api(libs.androidx.lifecycle.viewModelCompose)
+    api(libs.androidx.lifecycle.viewmodel.compose)
     api(libs.androidx.lifecycle.process)
     api(libs.androidx.material3.adaptive.navigation.suite)
 

@@ -1,0 +1,626 @@
+package org.cwcc.open.geokori.ui.material3.bottomsheet.core
+
+import androidx.compose.animation.core.AnimationSpec
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.State
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.unit.Velocity
+import kotlinx.coroutines.CancellationException
+import kotlin.jvm.JvmName
+
+/**
+ * State of a sheet composable, such as [FlexibleBottomSheet]
+ *
+ * Contains states relating to it's swipe position as well as animations between state values.
+ *
+ * @param skipHiddenState Whether the hidden state should be skipped. If true, the sheet will always be displayed.
+ * @param skipIntermediatelyExpanded Whether the intermediately expanded state, if the sheet is large
+ * enough, should be skipped. If true, the sheet will always expand to the [FlexibleSheetValue.FullyExpanded] state and move
+ * @param skipSlightlyExpanded Whether the slightly expanded state, if the sheet is tall enough,
+ * should be skipped. If true, the sheet will always expand to the [FlexibleSheetValue.IntermediatelyExpanded] or [FlexibleSheetValue.FullyExpanded] state and move to the
+ * to the [FlexibleSheetValue.Hidden] state if available when hiding the sheet, either programmatically or by user
+ * interaction.
+ * @param flexibleSheetSize FlexibleSheetSize constraints the content size of [FlexibleBottomSheet] based on its states.
+ * @param initialValue The initial value of the state.
+ * @param confirmValueChange Optional callback invoked to confirm or veto a pending state change.
+ * @param isModal Determines if the bottom sheet should be modal. If set to true, the sheet will include a scrim overlaying the background and
+ * will be dismissed upon touching outside of the sheet. If set to false, the bottom sheet allows interaction with the screen, permitting actions outside of the sheet.
+ * expand to the [FlexibleSheetValue.FullyExpanded] state and move to the [FlexibleSheetValue.IntermediatelyExpanded] if available, either
+ * programmatically or by user interaction.
+ */
+@Stable
+public class FlexibleSheetState(
+  public val skipHiddenState: Boolean,
+  public val skipIntermediatelyExpanded: Boolean,
+  public val skipSlightlyExpanded: Boolean,
+  flexibleSheetSize: FlexibleSheetSize,
+  public val containSystemBars: Boolean,
+  public val allowNestedScroll: Boolean,
+  public val isModal: Boolean,
+  public val animateSpec: AnimationSpec<Float>,
+  initialValue: FlexibleSheetValue = FlexibleSheetValue.Hidden,
+  confirmValueChange: (FlexibleSheetValue) -> Boolean = { true },
+) {
+  init {
+    if (skipIntermediatelyExpanded) {
+      require(initialValue != FlexibleSheetValue.IntermediatelyExpanded) {
+        "The initial value must not be set to IntermediatelyExpanded if " +
+          "skipIntermediatelyExpanded is set to true."
+      }
+    }
+    if (skipSlightlyExpanded) {
+      require(initialValue != FlexibleSheetValue.SlightlyExpanded) {
+        "The initial value must not be set to SlightlyExpanded if " +
+          "skipSlightlyExpanded is set to true. " +
+          "Set skipSlightlyExpanded = false to use this initial value."
+      }
+    }
+  }
+
+  private val _flexibleSheetSize: MutableState<FlexibleSheetSize> =
+    mutableStateOf(flexibleSheetSize)
+
+  /**
+   * FlexibleSheetSize constraints the content size of the bottom sheet based on its states.
+   *
+   * This is backed by snapshot state: updating it (via the `flexibleSheetSize` parameter of
+   * [rememberFlexibleBottomSheetState]) recomputes the sheet anchors while the sheet is displayed,
+   * so the intermediately/slightly/fully expanded heights can be changed dynamically at runtime
+   * (feature request #93). The value is updated by the library when the composable parameter
+   * changes; read it to observe the current constraints.
+   */
+  public var flexibleSheetSize: FlexibleSheetSize
+    get() = _flexibleSheetSize.value
+    internal set(value) {
+      _flexibleSheetSize.value = value
+    }
+
+  /**
+   * The current value of the state.
+   *
+   * If no swipe or animation is in progress, this corresponds to the state the bottom sheet is
+   * currently in. If a swipe or an animation is in progress, this corresponds the state the sheet
+   * was in before the swipe or animation started.
+   */
+
+  public val currentValue: FlexibleSheetValue get() = swipeableState.currentValue
+
+  /**
+   * The target value of the bottom sheet state.
+   *
+   * If a swipe is in progress, this is the value that the sheet would animate to if the
+   * swipe finishes. If an animation is running, this is the target value of that animation.
+   * Finally, if no swipe or animation is in progress, this is the same as the [currentValue].
+   */
+  public val targetValue: FlexibleSheetValue get() = swipeableState.targetValue
+
+  /**
+   * Whether the flexible bottom sheet is visible.
+   */
+  public val isVisible: Boolean
+    get() = swipeableState.currentValue != FlexibleSheetValue.Hidden
+
+  /**
+   * The continuous visibility progress of the bottom sheet within the `0f..1f` range.
+   *
+   * - `0f` means the sheet is fully hidden (off the bottom of the screen).
+   * - `1f` means the sheet is at its most expanded position ([FlexibleSheetValue.FullyExpanded]).
+   *
+   * Unlike [targetValue], which only reports discrete [FlexibleSheetValue] states, this value updates
+   * continuously while the sheet is dragged or animated. It is derived from the current sheet offset
+   * and its anchors, so it is safe to read from composition and will trigger recomposition as the
+   * sheet moves. It is backed by snapshot state, so reading it inside a composable subscribes to
+   * updates automatically.
+   *
+   * This is useful to drive content that should react to how much of the sheet is revealed, such as
+   * fading, translating, or scaling elements as the sheet expands and collapses.
+   *
+   * Before the first layout pass (while the offset is not yet initialized) this returns `0f`.
+   */
+  /*@FloatRange(from = 0.0, to = 1.0)*/
+  public val visibilityProgress: Float
+    get() = calculateVisibilityProgress(
+      anchors = swipeableState.anchors,
+      offset = swipeableState.offsetOrNull,
+    )
+
+  /**
+   * Require the current offset (in pixels) of the bottom sheet.
+   *
+   * The offset will be initialized during the first measurement phase of the provided sheet
+   * content.
+   *
+   * These are the phases:
+   * Composition { -> Effects } -> Layout { Measurement -> Placement } -> Drawing
+   *
+   * During the first composition, an [IllegalStateException] is thrown. In subsequent
+   * compositions, the offset will be derived from the anchors of the previous pass. Always prefer
+   * accessing the offset from a LaunchedEffect as it will be scheduled to be executed the next
+   * frame, after layout.
+   *
+   * @throws IllegalStateException If the offset has not been initialized yet
+   */
+  public fun requireOffset(): Float = swipeableState.requireOffset()
+
+  /**
+   * The current offset in pixels, or null if it has not been initialized yet.
+   * Unlike [requireOffset], this does not throw before the first layout pass,
+   * making it safe to read from composition or layout modifiers.
+   */
+  public val offsetOrNull: Float? get() = swipeableState.offsetOrNull
+
+  /**
+   * Whether the sheet has an expanded state defined.
+   */
+  public val hasFullyExpandedState: Boolean
+    get() = swipeableState.hasAnchorForValue(FlexibleSheetValue.FullyExpanded)
+
+  /**
+   * Whether the flexible bottom sheet has a intermediately expanded state defined.
+   */
+  public val hasIntermediatelyExpandedState: Boolean
+    get() = swipeableState.hasAnchorForValue(FlexibleSheetValue.IntermediatelyExpanded)
+
+  /**
+   * Whether the flexible bottom sheet has a slightly expanded state defined.
+   */
+  public val hasSlightlyExpandedState: Boolean
+    get() = swipeableState.hasAnchorForValue(FlexibleSheetValue.SlightlyExpanded)
+
+  private val _isAnimatingContent: MutableState<Boolean> = mutableStateOf(false)
+  public val isAnimatingContent: State<Boolean> = _isAnimatingContent
+
+  /**
+   * Fully expand the bottom sheet with animation and suspend until it is fully expanded or
+   * animation has been cancelled.
+   * *
+   * @throws [CancellationException] if the animation is interrupted
+   */
+  public suspend fun fullyExpand() {
+    if (!isModal) {
+      animateTo(targetValue = FlexibleSheetValue.FullyExpanded, animSpec = animateSpec)
+      animateTo(targetValue = FlexibleSheetValue.FullyExpanded, animSpec = animateSpec)
+
+    } else {
+      animateTo(targetValue = FlexibleSheetValue.FullyExpanded, animSpec = animateSpec)
+    }
+  }
+
+  /**
+   * Animate the bottom sheet and suspend until it is intermediately expanded or animation has been
+   * cancelled.
+   * @throws [CancellationException] if the animation is interrupted
+   * @throws [IllegalStateException] if [skipIntermediatelyExpanded] is set to true
+   */
+  public suspend fun intermediatelyExpand() {
+    check(!skipIntermediatelyExpanded) {
+      "Attempted to animate to intermediately expanded when skipIntermediatelyExpanded " +
+        "was enabled. Set skipIntermediatelyExpanded to false to use this function."
+    }
+    if (!isModal) {
+      animateTo(targetValue = FlexibleSheetValue.IntermediatelyExpanded, animSpec = animateSpec)
+      animateTo(targetValue = FlexibleSheetValue.IntermediatelyExpanded, animSpec = animateSpec)
+    } else {
+      animateTo(targetValue = FlexibleSheetValue.IntermediatelyExpanded, animSpec = animateSpec)
+    }
+  }
+
+  /**
+   * Animate the bottom sheet and suspend until it is intermediately expanded or animation has been
+   * cancelled.
+   * @throws [CancellationException] if the animation is interrupted
+   * @throws [IllegalStateException] if [skipIntermediatelyExpanded] is set to true
+   */
+  public suspend fun slightlyExpand() {
+    check(!skipSlightlyExpanded) {
+      "Attempted to animate to slightly expanded when skipSlightlyExpanded was enabled. Set" +
+        " skipIntermediatelyExpanded to false to use this function."
+    }
+    if (!isModal) {
+      animateTo(targetValue = FlexibleSheetValue.SlightlyExpanded, animSpec = animateSpec)
+      animateTo(targetValue = FlexibleSheetValue.SlightlyExpanded, animSpec = animateSpec)
+    } else {
+      animateTo(targetValue = FlexibleSheetValue.SlightlyExpanded, animSpec = animateSpec)
+    }
+  }
+
+  /**
+   * Expand the bottom sheet with animation and suspend until it is [FlexibleSheetValue.IntermediatelyExpanded] if defined
+   * else [FlexibleSheetValue.FullyExpanded].
+   * If the current state is not FlexibleSheetValue.Hidden,
+   * calling this function without set the [target] parameter will retain the current state.
+   * @throws [CancellationException] if the animation is interrupted
+   */
+  public suspend fun show(target: FlexibleSheetValue? = null) {
+    if (target == null && currentValue != FlexibleSheetValue.Hidden) {
+      return
+    }
+    if (!isModal) {
+      val targetValue1 = when {
+        hasIntermediatelyExpandedState -> FlexibleSheetValue.IntermediatelyExpanded
+        hasSlightlyExpandedState -> FlexibleSheetValue.SlightlyExpanded
+        else -> FlexibleSheetValue.FullyExpanded
+      }
+      animateTo(targetValue = targetValue1, animSpec = animateSpec)
+
+      val targetValue2 = when {
+        hasIntermediatelyExpandedState -> FlexibleSheetValue.IntermediatelyExpanded
+        hasSlightlyExpandedState -> FlexibleSheetValue.SlightlyExpanded
+        else -> FlexibleSheetValue.FullyExpanded
+      }
+      animateTo(targetValue = target ?: targetValue2, animSpec = animateSpec)
+    } else {
+      val targetValue = when {
+        hasIntermediatelyExpandedState -> FlexibleSheetValue.IntermediatelyExpanded
+        hasSlightlyExpandedState -> FlexibleSheetValue.SlightlyExpanded
+        else -> FlexibleSheetValue.FullyExpanded
+      }
+      animateTo(targetValue)
+    }
+  }
+
+  /**
+   * Hide the bottom sheet with animation and suspend until it is fully hidden or animation has
+   * been cancelled.
+   * @throws [CancellationException] if the animation is interrupted
+   */
+  public suspend fun hide() {
+    check(!skipHiddenState) {
+      "Attempted to animate to hidden when skipHiddenState was enabled. Set skipHiddenState" +
+        " to false to use this function."
+    }
+    animateTo(targetValue = FlexibleSheetValue.Hidden, animSpec = animateSpec)
+  }
+
+  /**
+   * Animate to a [targetValue].
+   * If the [targetValue] is not in the set of anchors, the [currentValue] will be updated to the
+   * [targetValue] without updating the offset.
+   *
+   * @throws CancellationException if the interaction interrupted by another interaction like a
+   * gesture interaction or another programmatic interaction like a [animateTo] or [snapTo] call.
+   *
+   * @param targetValue The target value of the animation
+   */
+  public suspend fun animateTo(
+    targetValue: FlexibleSheetValue,
+    velocity: Float = swipeableState.lastVelocity,
+    animSpec: AnimationSpec<Float> = animateSpec,
+  ) {
+    swipeableState.animateTo(
+      targetValue = targetValue,
+      velocity = velocity,
+      animSpec = animSpec,
+    )
+  }
+
+  /**
+   * Snap to a [targetValue] without any animation.
+   *
+   * @throws CancellationException if the interaction interrupted by another interaction like a
+   * gesture interaction or another programmatic interaction like a [animateTo] or [snapTo] call.
+   *
+   * @param targetValue The target value of the animation
+   */
+  public suspend fun snapTo(targetValue: FlexibleSheetValue) {
+    swipeableState.snapTo(targetValue)
+  }
+
+  /**
+   * Attempt to snap synchronously. Snapping can happen synchronously when there is no other swipe
+   * transaction like a drag or an animation is progress. If there is another interaction in
+   * progress, the suspending [snapTo] overload needs to be used.
+   *
+   * @return true if the synchronous snap was successful, or false if we couldn't snap synchronous
+   */
+  public fun trySnapTo(targetValue: FlexibleSheetValue): Boolean =
+    swipeableState.trySnapTo(targetValue)
+
+  /**
+   * Find the closest anchor taking into account the velocity and settle at it with an animation.
+   */
+  public suspend fun settle(velocity: Float) {
+    swipeableState.settle(velocity)
+  }
+
+  public var swipeableState: SwipeableV2State<FlexibleSheetValue> = SwipeableV2State(
+    initialValue = initialValue,
+    animationSpec = animateSpec,
+    confirmValueChange = confirmValueChange,
+  )
+
+  internal companion object {
+    /**
+     * The default [Saver] implementation for [FlexibleSheetState].
+     */
+    fun Saver(
+      skipHiddenState: Boolean,
+      skipIntermediatelyExpanded: Boolean,
+      skipSlightlyExpanded: Boolean,
+      flexibleSheetSize: FlexibleSheetSize,
+      containSystemBars: Boolean,
+      allowNestedScroll: Boolean,
+      isModal: Boolean,
+      animateSpec: AnimationSpec<Float>,
+      confirmValueChange: (FlexibleSheetValue) -> Boolean,
+    ) = Saver<FlexibleSheetState, FlexibleSheetValue>(
+      save = { it.currentValue },
+      restore = { savedValue ->
+        FlexibleSheetState(
+          skipHiddenState = skipHiddenState,
+          skipIntermediatelyExpanded = skipIntermediatelyExpanded,
+          skipSlightlyExpanded = skipSlightlyExpanded,
+          isModal = isModal,
+          initialValue = savedValue,
+          animateSpec = animateSpec,
+          flexibleSheetSize = flexibleSheetSize,
+          containSystemBars = containSystemBars,
+          allowNestedScroll = allowNestedScroll,
+          confirmValueChange = confirmValueChange,
+        )
+      },
+    )
+  }
+}
+
+/**
+ * Possible values of [FlexibleSheetValue].
+ */
+public enum class FlexibleSheetValue {
+  /**
+   * The sheet is not visible.
+   */
+  Hidden,
+
+  /**
+   * The sheet is visible at full height.
+   */
+  FullyExpanded,
+
+  /**
+   * The sheet is intermediately visible.
+   */
+  IntermediatelyExpanded,
+
+  /**
+   * The sheet is slightly visible.
+   */
+  SlightlyExpanded,
+}
+
+/**
+ * Computes the continuous visibility progress (see [FlexibleSheetState.visibilityProgress]) from the
+ * given swipe [anchors] and the current [offset].
+ *
+ * Offsets increase downward (a larger offset means the sheet is pushed further off the bottom of the
+ * screen). The smallest anchor is therefore the most-expanded position and the largest anchor is the
+ * least-visible position. When explicit [FlexibleSheetValue.FullyExpanded] / [FlexibleSheetValue.Hidden]
+ * anchors are present they are used as the endpoints; otherwise the min/max anchors are used as a
+ * fallback so the progress still spans the full available range.
+ *
+ * @return `0f` at the least-visible endpoint, `1f` at the most-expanded endpoint, or `0f` when the
+ * offset/anchors are not yet initialized.
+ */
+internal fun calculateVisibilityProgress(
+  anchors: Map<FlexibleSheetValue, Float>,
+  offset: Float?,
+): Float {
+  if (offset == null || anchors.isEmpty()) return 0f
+
+  val expandedOffset = anchors[FlexibleSheetValue.FullyExpanded]
+    ?: anchors.values.minOrNull()
+    ?: return 0f
+  val hiddenOffset = anchors[FlexibleSheetValue.Hidden]
+    ?: anchors.values.maxOrNull()
+    ?: return 0f
+
+  val range = hiddenOffset - expandedOffset
+  if (range <= 0f) {
+    // Degenerate range (single anchor / all-equal offsets). This is reachable on the first layout
+    // pass, where the anchor set is frequently {Hidden}-only (FullyExpanded is null until the sheet
+    // is measured, and the intermediate/slightly states may be skipped). Only report fully-expanded
+    // when an expanded anchor actually exists; a lone Hidden anchor must report 0f to honor the
+    // "0f when hidden" contract, otherwise content bound to visibilityProgress flashes on open (#57).
+    return if (anchors.containsKey(FlexibleSheetValue.FullyExpanded)) 1f else 0f
+  }
+
+  return ((hiddenOffset - offset) / range).coerceIn(0f, 1f)
+}
+
+
+public fun emptySwipeWithinBottomSheetBoundsNestedScrollConnection(): NestedScrollConnection =
+  object : NestedScrollConnection {
+    override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
+      return Velocity.Zero
+    }
+
+    override suspend fun onPreFling(available: Velocity): Velocity {
+      return super.onPreFling(available)
+    }
+  }
+
+
+public fun consumeSwipeWithinBottomSheetBoundsNestedScrollConnection(
+  screenHeight: Float,
+  sheetState: FlexibleSheetState,
+  orientation: Orientation,
+  onFling: (velocity: Float) -> Unit,
+  onDragging: (isDragging: Boolean) -> Unit = {},
+): NestedScrollConnection = object : NestedScrollConnection {
+  override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+    val delta = available.toFloat()
+    return if (delta < 0 && source == NestedScrollSource.Drag) {
+      onDragging.invoke(true)
+      sheetState.swipeableState.dispatchRawDelta(delta).toOffset()
+    } else if (delta > 0 && source == NestedScrollSource.Drag &&
+      sheetState.currentValue != FlexibleSheetValue.FullyExpanded && !sheetState.isModal
+    ) {
+      onDragging.invoke(true)
+      sheetState.swipeableState.dispatchRawDelta(delta).toOffset()
+    } else {
+      // For non-modal sheets, don't set isDragging = false during fling
+      // to prevent anchor recalculation before settle animation starts
+      if (sheetState.isModal) {
+        onDragging.invoke(false)
+      }
+      Offset.Zero
+    }
+  }
+
+  override fun onPostScroll(
+    consumed: Offset,
+    available: Offset,
+    source: NestedScrollSource,
+  ): Offset {
+    return if (source == NestedScrollSource.Drag) {
+      onDragging.invoke(true)
+      sheetState.swipeableState.dispatchRawDelta(available.toFloat()).toOffset()
+    } else {
+      // For non-modal sheets, don't set isDragging = false during fling
+      if (sheetState.isModal) {
+        onDragging.invoke(false)
+      }
+      Offset.Zero
+    }
+  }
+
+  override suspend fun onPreFling(available: Velocity): Velocity {
+    val toFling = available.toFloat()
+    val currentOffset = sheetState.requireOffset()
+    return if (toFling < 0 && currentOffset > sheetState.swipeableState.minOffset) {
+      onFling(toFling)
+      available
+    } else {
+      Velocity.Zero
+    }
+  }
+
+  override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
+    onFling(available.toFloat())
+    return available
+  }
+
+  private fun Float.toOffset(): Offset = Offset(
+    x = if (orientation == Orientation.Horizontal) this else 0f,
+    y = if (orientation == Orientation.Vertical) this else 0f,
+  )
+
+  @JvmName("velocityToFloat")
+  private fun Velocity.toFloat(): Float = if (orientation == Orientation.Horizontal) x else y
+
+  @JvmName("offsetToFloat")
+  private fun Offset.toFloat(): Float = if (orientation == Orientation.Horizontal) x else y
+}
+
+/**
+ * Create and [remember] a [FlexibleSheetState] for [FlexibleBottomSheet].
+ *
+ * @param skipHiddenState Whether the hidden state should be skipped. If true, the sheet will always be displayed.
+ * @param skipIntermediatelyExpanded Whether the intermediately expanded state, if the sheet is tall enough,
+ * should be skipped. If true, the sheet will always expand to the [FlexibleSheetValue.FullyExpanded] state and move to the
+ * @param skipSlightlyExpanded Whether the slightly expanded state, if the sheet is tall enough,
+ * should be skipped. If true, the sheet will always expand to the [FlexibleSheetValue.IntermediatelyExpanded] or [FlexibleSheetValue.FullyExpanded] state and move to the
+ * [FlexibleSheetValue.Hidden] state when hiding the sheet, either programmatically or by user interaction.
+ * @param initialValue The initial value of the sheet state. Defaults to [FlexibleSheetValue.Hidden].
+ * If set to a visible state (e.g., [FlexibleSheetValue.IntermediatelyExpanded]), the sheet will
+ * start in that state without animation.
+ * @param containSystemBars Determines if the bottom sheet sizes should consider containing system bars (status + navigation).
+ * @param allowNestedScroll Whether the bottom sheet should allow the content to implement nested scrolling.
+ * @param isModal Determines if the bottom sheet should be modal. If set to true, the sheet will include a scrim overlaying the background and
+ * will be dismissed upon touching outside of the sheet. If set to false, the bottom sheet allows interaction with the screen, permitting actions outside of the sheet.
+ * @param flexibleSheetSize FlexibleSheetSize constraints the content size of [FlexibleBottomSheet] based on its states.
+ * @param confirmValueChange Optional callback invoked to confirm or veto a pending state change.
+ */
+@Composable
+public fun rememberFlexibleBottomSheetState(
+  skipHiddenState: Boolean = false,
+  skipIntermediatelyExpanded: Boolean = false,
+  skipSlightlyExpanded: Boolean = true,
+  initialValue: FlexibleSheetValue = FlexibleSheetValue.Hidden,
+  isModal: Boolean = false,
+  containSystemBars: Boolean = true,
+  allowNestedScroll: Boolean = true,
+  animateSpec: AnimationSpec<Float> = SwipeableV2Defaults.AnimationSpec,
+  flexibleSheetSize: FlexibleSheetSize = FlexibleSheetSize(),
+  confirmValueChange: (FlexibleSheetValue) -> Boolean = {
+    if (skipHiddenState) {
+      it != FlexibleSheetValue.Hidden
+    } else {
+      true
+    }
+  },
+): FlexibleSheetState = rememberFlexibleSheetState(
+  skipHiddenState = skipHiddenState,
+  skipIntermediatelyExpanded = skipIntermediatelyExpanded,
+  skipSlightlyExpanded = skipSlightlyExpanded,
+  initialValue = initialValue,
+  isModal = isModal,
+  animateSpec = animateSpec,
+  confirmValueChange = confirmValueChange,
+  flexibleSheetSize = flexibleSheetSize,
+  containSystemBars = containSystemBars,
+  allowNestedScroll = allowNestedScroll,
+)
+
+@Composable
+private fun rememberFlexibleSheetState(
+  skipHiddenState: Boolean = false,
+  skipIntermediatelyExpanded: Boolean = false,
+  skipSlightlyExpanded: Boolean = false,
+  isModal: Boolean = true,
+  confirmValueChange: (FlexibleSheetValue) -> Boolean = { true },
+  animateSpec: AnimationSpec<Float> = SwipeableV2Defaults.AnimationSpec,
+  initialValue: FlexibleSheetValue = FlexibleSheetValue.Hidden,
+  flexibleSheetSize: FlexibleSheetSize = FlexibleSheetSize(),
+  containSystemBars: Boolean = true,
+  allowNestedScroll: Boolean = true,
+): FlexibleSheetState {
+  val state = rememberSaveable(
+    skipHiddenState,
+    skipIntermediatelyExpanded,
+    skipSlightlyExpanded,
+    confirmValueChange,
+    saver = FlexibleSheetState.Saver(
+      skipHiddenState = skipHiddenState,
+      skipIntermediatelyExpanded = skipIntermediatelyExpanded,
+      skipSlightlyExpanded = skipSlightlyExpanded,
+      isModal = isModal,
+      animateSpec = animateSpec,
+      flexibleSheetSize = flexibleSheetSize,
+      containSystemBars = containSystemBars,
+      allowNestedScroll = allowNestedScroll,
+      confirmValueChange = confirmValueChange,
+    ),
+  ) {
+    FlexibleSheetState(
+      skipHiddenState = skipHiddenState,
+      skipIntermediatelyExpanded = skipIntermediatelyExpanded,
+      skipSlightlyExpanded = skipSlightlyExpanded,
+      isModal = isModal,
+      initialValue = initialValue,
+      animateSpec = animateSpec,
+      confirmValueChange = confirmValueChange,
+      flexibleSheetSize = flexibleSheetSize,
+      containSystemBars = containSystemBars,
+      allowNestedScroll = allowNestedScroll,
+    )
+  }
+
+  // Keep the sheet size reactive: when the caller passes a new FlexibleSheetSize, update the state
+  // so the anchors recompute without recreating (and resetting) the sheet (feature request #93).
+  LaunchedEffect(flexibleSheetSize) {
+    state.flexibleSheetSize = flexibleSheetSize
+  }
+
+  return state
+}

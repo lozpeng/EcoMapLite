@@ -1,15 +1,66 @@
-*.iml
-.gradle
-/local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
-.DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
+# ========== Gradle ==========
+.gradle/
+build/
+**/build/
+!gradle/wrapper/gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
 local.properties
+
+# ========== Android ==========
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+captures/
+.externalNativeBuild/
+.cxx/
+output.json
+*.hprof
+
+# ========== 签名文件（切勿提交）==========
+*.jks
+*.keystore
+keystore.properties
+
+# ========== Kotlin / Java ==========
+*.kotlin_module
+.kotlin/
+
+# ========== Rust / Cargo ==========
+target/
+**/target/
+*.rs.bk
+
+# ========== NDK / CMake ==========
+*.o
+*.a
+*.so.dbg
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+
+# ========== JNI 生成产物 ==========
+**/jniLibs/
+**/generated/source/cxx/
+
+# ========== IDE ==========
+*.iml
+.idea/
+.vscode/
+.settings/
+.project
+.classpath
+*.iws
+*.ipr
+
+# ========== 系统 ==========
+.DS_Store
+Thumbs.db
+
+# ========== 日志 / 临时 ==========
+*.log
+*.tmp
+*.swp
+*.bak
+*~
