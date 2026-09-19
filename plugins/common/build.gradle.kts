@@ -26,11 +26,8 @@ plugins {
 
 android {
     namespace = "com.combo.plugin.sample.common"
-    compileSdk = 36
 
     defaultConfig {
-        minSdk = 24
-
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         consumerProguardFiles("consumer-rules.pro")
     }
@@ -46,12 +43,12 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
+        sourceCompatibility = JavaVersion.VERSION_1_8
+        targetCompatibility = JavaVersion.VERSION_1_8
     }
     kotlin {
         compilerOptions {
-            jvmTarget.set(JvmTarget.JVM_17)
+             jvmTarget.set(JvmTarget.JVM_1_8)
         }
     }
     buildFeatures {
@@ -60,10 +57,12 @@ android {
 }
 
 dependencies {
+    implementation(platform(libs.androidx.compose.bom))
     implementation(projects.dependencies)
     // ========== 插件化框架接口 ==========
     // 插件核心库 远程依赖方式
 //    compileOnly(libs.combolite.core)
     // 插件核心库 本地依赖方式
     compileOnly(projects.core)
+
 }

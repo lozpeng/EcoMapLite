@@ -20,10 +20,10 @@ plugins {
 
 android {
     namespace = "com.combo.dependencies"
-    compileSdk = 36
 }
 
 dependencies {
+    api(platform(libs.androidx.compose.bom))
     api(libs.material)
     api(libs.androidx.appcompat)
     api(libs.androidx.constraintlayout)
@@ -92,4 +92,6 @@ dependencies {
     // ========== 其他常用库 ==========
     api(libs.androidx.foundation.android)
     api(libs.kotlin.reflect)
+    api(libs.androidx.compose.material.icons.core)
+    api(libs.androidx.compose.material.icons.extended)
 }

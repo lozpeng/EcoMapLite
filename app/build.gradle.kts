@@ -28,12 +28,8 @@ plugins {
 
 android {
     namespace = "com.combo.plugin.sample"
-    compileSdk = 36
-
     defaultConfig {
         applicationId = "com.combo.plugin.sample"
-        minSdk = 24
-        targetSdk = 36
         versionCode = 1
         versionName = "1.0"
 
@@ -89,12 +85,12 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
+        sourceCompatibility = JavaVersion.VERSION_1_8
+        targetCompatibility = JavaVersion.VERSION_1_8
     }
     kotlin {
         compilerOptions {
-            jvmTarget.set(JvmTarget.JVM_17)
+             jvmTarget.set(JvmTarget.JVM_1_8)
             freeCompilerArgs =
                 listOf(
                     "-Xno-param-assertions",
@@ -117,7 +113,7 @@ packagePlugins {
 }
 
 dependencies {
-
+    implementation(platform(libs.androidx.compose.bom))
     // 插件核心库 远程依赖方式
     //implementation(libs.combolite.core)
 

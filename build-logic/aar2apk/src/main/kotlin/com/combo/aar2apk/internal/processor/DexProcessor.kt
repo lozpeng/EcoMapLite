@@ -77,7 +77,10 @@ internal class DexProcessor(
         // 使用 javac 编译
         shellExecutor.execute(
             listOf(
-                "javac", "-cp", sdkInfo.androidJar.absolutePath,
+                "javac",
+                "--release", "17",
+                "-cp",
+                sdkInfo.androidJar.absolutePath,
                 "-d", classesDir.absolutePath,
                 *javaFilePaths.toTypedArray()
             ),

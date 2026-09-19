@@ -6,7 +6,8 @@ includeBuild("build-logic")
 
 pluginManagement {
     val agpVersion: String = run {
-        val toml = File("gradle/libs.versions.toml")
+        // 修改点 1：使用 settingsDir 确保路径正确
+        val toml = File(settingsDir, "gradle/libs.versions.toml")
         check(toml.exists()) { "libs.versions.toml not found" }
         Regex("""^\s*agp\s*=\s*"([^"]+)"""", RegexOption.MULTILINE)
             .find(toml.readText())?.groupValues?.get(1)
@@ -14,6 +15,11 @@ pluginManagement {
     }
 
     repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+
+        // 阿里云镜像作为备用
         maven("https://maven.aliyun.com/repository/google") {
             content {
                 includeGroupByRegex("com\\.android.*")
@@ -23,9 +29,6 @@ pluginManagement {
         }
         maven("https://maven.aliyun.com/repository/gradle-plugin")
         maven("https://maven.aliyun.com/repository/public")
-        google()
-        mavenCentral()
-        gradlePluginPortal()
     }
 
     plugins {
@@ -39,7 +42,8 @@ plugins {
 }
 
 fun readTomlVersionInt(key: String): Int {
-    val toml = File("gradle/libs.versions.toml")
+    // 修改点 2：同样使用 settingsDir
+    val toml = File(settingsDir, "gradle/libs.versions.toml")
     val value = Regex("""^\s*${Regex.escape(key)}\s*=\s*"([^"]+)"""", RegexOption.MULTILINE)
         .find(toml.readText())?.groupValues?.get(1)
         ?: error("Version '$key' not found in libs.versions.toml")
