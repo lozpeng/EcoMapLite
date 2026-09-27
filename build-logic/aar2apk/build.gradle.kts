@@ -32,7 +32,15 @@ dependencies {
     implementation(buildLibs.android.gradle.api)
     implementation(buildLibs.kotlin.gradle.plugin)
 }
+kotlin {
+    jvmToolchain(21)
+}
 
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
 gradlePlugin {
     group = "io.github.lnzz123"
     version = "1.1.1"

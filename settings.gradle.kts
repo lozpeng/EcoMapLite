@@ -1,15 +1,15 @@
-import java.io.File
-
 enableFeaturePreview("TYPESAFE_PROJECT_ACCESSORS")
 
 includeBuild("build-logic")
 
 pluginManagement {
+    // Stage 1：看不到脚本主体里定义的函数，这里必须内联读取。
+    // 路径用 rootDir 锚定，不依赖 CWD。
+    val tomlFile = rootDir.resolve("gradle/libs.versions.toml")
     val agpVersion: String = run {
-        val toml = File("gradle/libs.versions.toml")
-        check(toml.exists()) { "libs.versions.toml not found" }
+        check(tomlFile.exists()) { "libs.versions.toml not found at $tomlFile" }
         Regex("""^\s*agp\s*=\s*"([^"]+)"""", RegexOption.MULTILINE)
-            .find(toml.readText())?.groupValues?.get(1)
+            .find(tomlFile.readText())?.groupValues?.get(1)
             ?: error("Cannot find 'agp' in libs.versions.toml")
     }
 
@@ -38,18 +38,20 @@ plugins {
     id("com.android.settings")
 }
 
-fun readTomlVersionInt(key: String): Int {
-    val toml = File("gradle/libs.versions.toml")
-    val value = Regex("""^\s*${Regex.escape(key)}\s*=\s*"([^"]+)"""", RegexOption.MULTILINE)
-        .find(toml.readText())?.groupValues?.get(1)
+// Stage 2：这里定义的函数可以被 android { } / dependencyResolutionManagement { } 访问。
+private val libsToml: String by lazy { rootDir.resolve("gradle/libs.versions.toml").readText() }
+
+private fun tomlValue(key: String): String =
+    Regex("""^\s*${Regex.escape(key)}\s*=\s*"([^"]+)"""", RegexOption.MULTILINE)
+        .find(libsToml)?.groupValues?.get(1)
         ?: error("Version '$key' not found in libs.versions.toml")
-    return value.toInt()
-}
+
+private fun readTomlVersionInt(key: String): Int = tomlValue(key).toInt()
 
 android {
     compileSdk { version = release(readTomlVersionInt("complySdk")) }
-    minSdk { version = release(readTomlVersionInt("minSdk")) }
-    targetSdk { version = release(readTomlVersionInt("complySdk")) }
+    minSdk     { version = release(readTomlVersionInt("minSdk")) }
+    targetSdk  { version = release(readTomlVersionInt("complySdk")) }
 }
 
 dependencyResolutionManagement {
