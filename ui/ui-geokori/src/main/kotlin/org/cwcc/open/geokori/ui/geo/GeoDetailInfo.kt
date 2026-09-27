@@ -10,10 +10,6 @@ import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import org.cwcc.open.geokori.Utils
-import org.maplibre.spatialk.geojson.Feature
-import org.maplibre.spatialk.geojson.Geometry
-import org.maplibre.spatialk.geojson.Position
-import uniffi.ferrostar.RecordingException
 
 /**
  * 地理信息消息
@@ -21,8 +17,7 @@ import uniffi.ferrostar.RecordingException
 @Serializable
 data class GeoDetailInfo(
     val layerId:String,
-    @Serializable(with = PositionSerializer::class)
-    val coordinate: Position,
+    val coordinate: DoubleArray,
     val properties: Map<String, String>,
     val featureJson:String,
     val displayFields:Map<String,String>
@@ -32,8 +27,9 @@ data class GeoDetailInfo(
   {
     return Json.encodeToString(this)
   }
-  fun getFeature():Feature<Geometry, JsonObject?>{
-    return Feature.fromJson(featureJson)
+  fun getFeature():JsonObject?{
+    //return Gson.fromJson(featureJson)
+    return null
   }
 
   /**
@@ -86,27 +82,5 @@ data class GeoDetailInfo(
     fun fromJsonString(jsonString: String): GeoDetailInfo {
       return Json.decodeFromString<GeoDetailInfo>(jsonString)
     }
-  }
-}
-
-
-object PositionSerializer : KSerializer<Position> {
-  override val descriptor: SerialDescriptor =
-      PrimitiveSerialDescriptor("Position", PrimitiveKind.STRING)
-
-  override fun serialize(encoder: Encoder, value: Position) {
-    encoder.encodeString("${value.latitude},${value.longitude}")
-  }
-
-  override fun deserialize(decoder: Decoder): Position {
-    val string = decoder.decodeString()
-    val parts = string.split(",")
-    if (parts.size != 2) {
-      throw RecordingException.SerializationException("Invalid Position format: $string")
-    }
-    return Position(
-        parts[1].trim().toDouble(),
-        parts[0].trim().toDouble()
-    )
   }
 }

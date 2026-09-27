@@ -37,13 +37,13 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_17
-        targetCompatibility = JavaVersion.VERSION_17
+        sourceCompatibility = JavaVersion.VERSION_1_8
+        targetCompatibility = JavaVersion.VERSION_1_8
     }
 
     kotlin {
         compilerOptions {
-            jvmTarget.set(JvmTarget.JVM_17)
+             jvmTarget.set(JvmTarget.JVM_1_8)
         }
     }
 
@@ -53,6 +53,7 @@ android {
 }
 
 dependencies {
+    implementation(platform(libs.androidx.compose.bom))
     // 最小化依赖
     implementation(libs.androidx.core)
     implementation(libs.timber)
@@ -81,6 +82,9 @@ dependencies {
     implementation(libs.coil.kt)
     implementation(libs.coil.okhttp)
     implementation(libs.coil.kt.compose)
+   //androidx-compose-material-icons-extended
+    implementation(libs.androidx.compose.material.icons.core)
+    implementation(libs.androidx.compose.material.icons.extended)
 }
 
 mavenPublishing {
