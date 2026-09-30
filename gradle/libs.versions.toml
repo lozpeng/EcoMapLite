@@ -11,6 +11,8 @@ androidxComposeMaterial3 = "1.4.0"
 androidxNavigation = "2.9.3"
 kotlinxSerializationJson = "1.11.0"
 retrofit = "3.0.0"
+gson = "2.11.0"
+
 okHttp = "5.3.2"
 sandwich = "2.1.2"
 landscapist = "2.5.1"
@@ -48,6 +50,7 @@ paparazzi = "2.0.0-alpha04"
 kotlinx-datetime = "0.8.0"
 androidx-car-app = "1.7.0"
 compose = "2026.02.01"
+maplibre = "13.6.1"
 maplibre-compose = "0.16.0"
 maplibre-runtime-opengl = "0.16.0"
 car-app-compose = "0.0.2"
@@ -71,15 +74,15 @@ xOrmLite = "1.0.2"
 #combolite aar2apk
 aarToApkPlugin = "1.1.1"
 
+
+
 [libraries]
 desugar_jdk_libs = { module = "com.android.tools:desugar_jdk_libs", version.ref = "desugar_jdk_libs" }
 
 # Dexlib2
 dexlib2 = { group = "org.smali", name = "dexlib2", version.ref = "dexlib2" }
-
 # Timber
 timber = { group = "com.jakewharton.timber", name = "timber", version.ref = "timber" }
-
 # Accompanist
 accompanist-permissions = { group = "com.google.accompanist", name = "accompanist-permissions", version.ref = "accompanist" }
 google-accompanist-draw = { group = "com.google.accompanist", name = "accompanist-drawablepainter", version.ref = "accompanist" }
@@ -164,6 +167,8 @@ sandwich-core = { group = "com.github.skydoves", name = "sandwich", version.ref 
 retrofit-bom = { module = "com.squareup.retrofit2:retrofit-bom", version.ref = "retrofit" }
 retrofit = { module = "com.squareup.retrofit2:retrofit" }
 converter-gson = { group = "com.squareup.retrofit2", name = "converter-gson", version.ref = "retrofit" }
+gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
+
 retrofit-kotlinx-serialization = { module = "com.squareup.retrofit2:converter-kotlinx-serialization" }
 
 okhttp-bom = { module = "com.squareup.okhttp3:okhttp-bom", version.ref = "okHttp" }
@@ -235,6 +240,10 @@ androidx-localbroadcastmanager = { group = "androidx.localbroadcastmanager", nam
 ormLite = { group = "com.j256.ormlite", name = "ormlite-android", version.ref = "ormLite" }
 xormlite = { group = "com.github.xuexiangjys.XOrmlite", name = "xormlite-runtime", version.ref = "xOrmLite" }
 xormAnnot = { group = "com.github.xuexiangjys.XOrmlite", name = "xormlite-compiler", version.ref = "xOrmLite" }
+
+# map libre
+maplibre-vulkan = { group = "org.maplibre.gl", name = "android-sdk", version.ref = "maplibre" }
+maplibre-opengl = { group = "org.maplibre.gl", name = "android-sdk-opengl", version.ref = "maplibre" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

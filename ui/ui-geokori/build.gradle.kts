@@ -65,6 +65,7 @@ dependencies {
 
     api(libs.photo.view)
     api(libs.glid)
+    api(libs.gson)
 
     implementation(project(":core"))
 
@@ -82,13 +83,14 @@ dependencies {
     api(libs.gsyVideoPlayer.arm64)  // 现代手机基本都是 arm64
     // 如果需要支持 armeabi-v7a 设备
     //implementation(libs.gsyVideoPlayer.armv7a)
+    implementation(libs.maplibre.opengl)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.junit)
     androidTestImplementation(libs.androidx.test.espresso)
 
-    implementation(libs.androidx.compose.ui.tooling.preview)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
+
 }

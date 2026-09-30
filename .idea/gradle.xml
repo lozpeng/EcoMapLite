@@ -33,6 +33,7 @@
             <option value="$PROJECT_DIR$/plugins" />
             <option value="$PROJECT_DIR$/plugins/common" />
             <option value="$PROJECT_DIR$/plugins/example" />
+            <option value="$PROJECT_DIR$/plugins/geokori" />
             <option value="$PROJECT_DIR$/plugins/guide" />
             <option value="$PROJECT_DIR$/plugins/home" />
             <option value="$PROJECT_DIR$/plugins/setting" />

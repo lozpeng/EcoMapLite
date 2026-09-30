@@ -36,15 +36,13 @@ import androidx.compose.ui.draw.scale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.cwcc.open.geokori.ui.material3.bottomsheet.FlexibleBottomSheet
 import org.cwcc.open.geokori.ui.material3.bottomsheet.core.FlexibleSheetValue
 import org.cwcc.open.geokori.ui.material3.pluginBottomSheetConfig
 import org.cwcc.open.geokori.ui.material3.rememberPluginSheetState
-import org.maplibre.spatialk.geojson.Feature
-import org.maplibre.spatialk.geojson.Geometry
-import org.maplibre.spatialk.geojson.Point
+import org.maplibre.geojson.Feature
+import org.maplibre.geojson.Point
 
 /**
  * 显示地理要素详细信息
@@ -93,71 +91,71 @@ fun GeoDetailBottomSheet(
 }
 
 @Composable
-fun GeoDetailContent(feature: Feature<Geometry, JsonObject?>,displayFields:Map<String, String> = mapOf()) {
-  val properties = feature.properties ?: return
-  Column(
-      modifier = Modifier
-          .fillMaxWidth()
-          .padding(16.dp),
-      verticalArrangement = Arrangement.spacedBy(8.dp),
-  ) {
-    displayFields.forEach { (label, key) ->
-      val value = properties[key]?.jsonPrimitive?.content ?: ""
-      if (value.isNotEmpty()) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-          Text(
-              text = "$label：",
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
-              style = MaterialTheme.typography.bodyMedium,
-          )
-          Text(
-              text = value,
-              fontWeight = FontWeight.Medium,
-              style = MaterialTheme.typography.bodyMedium,
-          )
+fun GeoDetailContent(feature: Feature, displayFields: Map<String, String> = mapOf()) {
+    val properties = feature.properties() ?: return
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        displayFields.forEach { (label, key) ->
+            // JsonObject 取值：先判空再取字符串
+            val element = properties.get(key)
+            val value = if (element != null && element.isJsonPrimitive) element.asString else ""
+            if (value.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        text = "$label：",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        text = value,
+                        fontWeight = FontWeight.Medium,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
         }
-      }
+        // 坐标信息：Point 直接用 longitude()/latitude()
+        (feature.geometry() as? Point)?.let { point ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "经度：",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    text = "${point.longitude()}",
+                    fontWeight = FontWeight.Medium,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "纬度：",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    text = "${point.latitude()}",
+                    fontWeight = FontWeight.Medium,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+        }
     }
-
-    // 坐标信息
-    (feature.geometry as? Point)?.coordinates?.let { coord ->
-      Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.SpaceBetween,
-      ) {
-        Text(
-            text = "经度：",
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.bodyMedium,
-        )
-        Text(
-            text = "${coord.longitude}",
-            fontWeight = FontWeight.Medium,
-            style = MaterialTheme.typography.bodyMedium,
-        )
-      }
-      Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.SpaceBetween,
-      ) {
-        Text(
-            text = "纬度：",
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.bodyMedium,
-        )
-        Text(
-            text = "${coord.latitude}",
-            fontWeight = FontWeight.Medium,
-            style = MaterialTheme.typography.bodyMedium,
-        )
-      }
-    }
-  }
 }
-
 /**
  * Dialog 中显示的内容（不使用 FlexibleBottomSheet）
  */
@@ -168,105 +166,106 @@ fun DialogContent(
     displayFields: Map<String, String> = mapOf(),
     onDismiss: (() -> Unit)? = null
 ) {
-  val feature = detailInfo.getFeature()
-  val properties = feature.properties ?: return
+    val feature = detailInfo.getFeature()
+    val properties = feature.properties() ?: return
 
-  Column(
-      modifier = Modifier
-          .fillMaxWidth()
-          .background(
-              color = MaterialTheme.colorScheme.surface,
-              shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
-          )
-          .padding(16.dp),
-  ) {
-    // 顶部拖拽指示器
-    Box(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 8.dp),
-        contentAlignment = Alignment.Center,
+            .background(
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
+            )
+            .padding(16.dp),
     ) {
-      Box(
-          modifier = Modifier
-              .width(40.dp)
-              .height(4.dp)
-              .background(
-                  color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                  shape = RoundedCornerShape(2.dp),
-              ),
-      )
-    }
-
-    Text(
-        text = title,
-        fontWeight = FontWeight.Bold,
-        style = MaterialTheme.typography.titleLarge,
-        modifier = Modifier.padding(bottom = 16.dp),
-    )
-
-    // 显示字段
-    displayFields.forEach { (label, key) ->
-      val value = properties[key]?.jsonPrimitive?.content ?: ""
-      if (value.isNotEmpty()) {
-        Row(
+        // 顶部拖拽指示器
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 4.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
+                .padding(vertical = 8.dp),
+            contentAlignment = Alignment.Center,
         ) {
-          Text(
-              text = "$label：",
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
-              style = MaterialTheme.typography.bodyMedium,
-          )
-          Text(
-              text = value,
-              fontWeight = FontWeight.Medium,
-              style = MaterialTheme.typography.bodyMedium,
-          )
+            Box(
+                modifier = Modifier
+                    .width(40.dp)
+                    .height(4.dp)
+                    .background(
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                        shape = RoundedCornerShape(2.dp),
+                    ),
+            )
         }
-      }
-    }
 
-    // 坐标信息
-    (feature.geometry as? Point)?.coordinates?.let { coord ->
-      Row(
-          modifier = Modifier
-              .fillMaxWidth()
-              .padding(vertical = 4.dp),
-          horizontalArrangement = Arrangement.SpaceBetween,
-      ) {
         Text(
-            text = "经度：",
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.bodyMedium,
+            text = title,
+            fontWeight = FontWeight.Bold,
+            style = MaterialTheme.typography.titleLarge,
+            modifier = Modifier.padding(bottom = 16.dp),
         )
-        Text(
-            text = "${coord.longitude}",
-            fontWeight = FontWeight.Medium,
-            style = MaterialTheme.typography.bodyMedium,
-        )
-      }
-      Row(
-          modifier = Modifier
-              .fillMaxWidth()
-              .padding(vertical = 4.dp),
-          horizontalArrangement = Arrangement.SpaceBetween,
-      ) {
-        Text(
-            text = "纬度：",
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.bodyMedium,
-        )
-        Text(
-            text = "${coord.latitude}",
-            fontWeight = FontWeight.Medium,
-            style = MaterialTheme.typography.bodyMedium,
-        )
-      }
+
+        // 显示字段
+        displayFields.forEach { (label, key) ->
+            val element = properties.get(key)
+            val value = if (element != null && element.isJsonPrimitive) element.asString else ""
+            if (value.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        text = "$label：",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        text = value,
+                        fontWeight = FontWeight.Medium,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
+        }
+
+        // 坐标信息
+        (feature.geometry() as? Point)?.let { point ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "经度：",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    text = "${point.longitude()}",
+                    fontWeight = FontWeight.Medium,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = "纬度：",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    text = "${point.latitude()}",
+                    fontWeight = FontWeight.Medium,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+        }
     }
-  }
 }
 @Composable
 fun TitleBar(

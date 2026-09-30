@@ -10,6 +10,7 @@ import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import org.cwcc.open.geokori.Utils
+import org.maplibre.geojson.Feature
 
 /**
  * 地理信息消息
@@ -27,9 +28,8 @@ data class GeoDetailInfo(
   {
     return Json.encodeToString(this)
   }
-  fun getFeature():JsonObject?{
-    //return Gson.fromJson(featureJson)
-    return null
+  fun getFeature(): Feature{
+    return Feature.fromJson(featureJson)
   }
 
   /**
