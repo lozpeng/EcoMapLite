@@ -13,7 +13,7 @@ package org.kori.plugin.geo.map
  */
 enum class MapStyle(val label: String, val uri: String) {
     LIBERTY("免费地图(Liberty风格)", "https://tiles.openfreemap.org/styles/liberty"),
-    LTIANDITU("天地图","assets://raster_style_tdt.json");
+    LTIANDITU("天地图","asset://raster_style_tdt.json");
 
     companion object {
         val DEFAULT = LIBERTY

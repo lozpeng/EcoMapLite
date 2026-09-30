@@ -16,7 +16,7 @@ class PluginEntryClass : IPluginEntryClass {
     }
 
     override fun onLoad(context: PluginContext) {
-        MapLibre.getInstance(context.application)
+        //MapLibre.getInstance(context.application)
     }
 
     override fun onUnload() {

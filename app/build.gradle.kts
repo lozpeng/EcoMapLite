@@ -25,10 +25,10 @@ android {
     signingConfigs {
         getByName("debug") {
             storeFile =
-                file("$rootDir/jctech.jks")
-            storePassword = "he1755858138"
-            keyAlias = "jctech"
-            keyPassword = "he1755858138"
+                file("$rootDir/plugins/ecomap.jks")
+            storePassword = "ani9772"
+            keyAlias = "ecomap"
+            keyPassword = "123456"
         }
         val properties = Properties()
         val localPropertyFile = project.rootProject.file("local.properties")
@@ -37,10 +37,10 @@ android {
         }
         create("release") {
             storeFile =
-                file("$rootDir/jctech.jks")
-            keyAlias = "jctech"
-            keyPassword = "he1755858138"
-            storePassword = "he1755858138"
+                file("$rootDir/plugins/ecomap.jks")
+            keyAlias = "ecomap"
+            keyPassword = "123456"
+            storePassword = "ani9772"
         }
     }
 
