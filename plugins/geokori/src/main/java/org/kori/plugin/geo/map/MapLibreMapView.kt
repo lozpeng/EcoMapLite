@@ -11,13 +11,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LocationOn
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Switch
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -25,14 +21,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
@@ -41,6 +31,10 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import org.cwcc.open.geokori.map.MapRuntime
 import org.kori.plugin.geo.map.sp.SatelliteSupport
 import org.kori.plugin.geo.map.sp.TerrainSupport
+import org.kori.plugin.geo.map.ui.BaseMapOption
+import org.kori.plugin.geo.map.ui.LayerEntry
+import org.kori.plugin.geo.map.ui.MapLayersControl
+import org.kori.plugin.geo.map.ui.OverlayToggle
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.geometry.LatLng
@@ -51,6 +45,14 @@ import org.maplibre.android.location.modes.RenderMode
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
+import org.maplibre.android.style.layers.CircleLayer
+import org.maplibre.android.style.layers.FillExtrusionLayer
+import org.maplibre.android.style.layers.FillLayer
+import org.maplibre.android.style.layers.HillshadeLayer
+import org.maplibre.android.style.layers.LineLayer
+import org.maplibre.android.style.layers.Property
+import org.maplibre.android.style.layers.PropertyFactory
+import org.maplibre.android.style.layers.RasterLayer
 import org.maplibre.android.style.layers.SymbolLayer
 
 // =============================================================================================
@@ -60,38 +62,10 @@ import org.maplibre.android.style.layers.SymbolLayer
 private val BUILTIN_SATELLITE_LAYERS = listOf("天地图卫星影像", "天地图注记")
 private const val BUILTIN_SATELLITE_ANCHOR = "天地图注记"
 
-// =============================================================================================
-// 内联图标
-// =============================================================================================
+private const val BASE_MAP_SATELLITE = "satellite"
+private const val BASE_MAP_TERRAIN = "terrain"
 
-private val LayersIcon: ImageVector by lazy {
-    ImageVector.Builder(
-        name = "Layers",
-        defaultWidth = 24.dp,
-        defaultHeight = 24.dp,
-        viewportWidth = 24f,
-        viewportHeight = 24f,
-    ).apply {
-        path(fill = SolidColor(Color.Black)) {
-            moveTo(11.99f, 18.54f)
-            lineTo(4.62f, 12.81f)
-            lineTo(3f, 14.07f)
-            lineTo(12f, 21.07f)
-            lineTo(21f, 14.07f)
-            lineTo(19.37f, 12.81f)
-            lineTo(11.99f, 18.54f)
-            close()
-            moveTo(12f, 16f)
-            lineTo(19.36f, 10.27f)
-            lineTo(21f, 9f)
-            lineTo(12f, 2f)
-            lineTo(3f, 9f)
-            lineTo(4.63f, 10.27f)
-            lineTo(12f, 16f)
-            close()
-        }
-    }.build()
-}
+private const val OVERLAY_CONTOUR = "contour"
 
 // =============================================================================================
 // 主 Composable
@@ -110,22 +84,39 @@ fun MapLibreMapView(
     val lifecycleOwner = LocalLifecycleOwner.current
 
     // ---------------------------------------------------------------------
-    // 内部开关状态（与 config 初始值同步）
+    // 内部状态
     // ---------------------------------------------------------------------
     var locationEnabled by remember { mutableStateOf(config.showUserLocation) }
-    var satelliteEnabled by remember { mutableStateOf(config.satelliteOn) }
-    var hillshadeEnabled by remember { mutableStateOf(config.hillshadeOn) }
+    var selectedBaseMap by remember {
+        mutableStateOf(
+            when {
+                config.satelliteOn -> BASE_MAP_SATELLITE
+                config.hillshadeOn -> BASE_MAP_TERRAIN
+                else -> BASE_MAP_SATELLITE
+            },
+        )
+    }
     var contourEnabled by remember { mutableStateOf(config.contourOn) }
-    var menuExpanded by remember { mutableStateOf(false) }
 
+    var layerOverrides by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
+    var availableLayers by remember { mutableStateOf<List<LayerEntry>>(emptyList()) }
+
+    val satelliteEnabled = selectedBaseMap == BASE_MAP_SATELLITE
+    val hillshadeEnabled = selectedBaseMap == BASE_MAP_TERRAIN
+
+    // ---------------------------------------------------------------------
+    // 从 config 同步初始值
+    // ---------------------------------------------------------------------
     LaunchedEffect(config.showUserLocation) {
         if (config.showUserLocation != locationEnabled) locationEnabled = config.showUserLocation
     }
-    LaunchedEffect(config.satelliteOn) {
-        if (config.satelliteOn != satelliteEnabled) satelliteEnabled = config.satelliteOn
-    }
-    LaunchedEffect(config.hillshadeOn) {
-        if (config.hillshadeOn != hillshadeEnabled) hillshadeEnabled = config.hillshadeOn
+    LaunchedEffect(config.satelliteOn, config.hillshadeOn) {
+        val want = when {
+            config.satelliteOn -> BASE_MAP_SATELLITE
+            config.hillshadeOn -> BASE_MAP_TERRAIN
+            else -> return@LaunchedEffect
+        }
+        if (want != selectedBaseMap) selectedBaseMap = want
     }
     LaunchedEffect(config.contourOn) {
         if (config.contourOn != contourEnabled) contourEnabled = config.contourOn
@@ -198,7 +189,6 @@ fun MapLibreMapView(
         mapView.getMapAsync { map ->
             mapRef = map
 
-            // 用户手势平移 → 退出相机跟随
             map.addOnCameraMoveStartedListener { reason ->
                 if (reason == MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
                     runCatching {
@@ -212,7 +202,6 @@ fun MapLibreMapView(
                 }
             }
 
-            // ★ 构建样式（如果需要 DEM，动态注入 DEM 源定义到 JSON）
             val styleBuilder = buildStyleWithDemInjection(
                 context = context,
                 styleUri = config.styleUrl,
@@ -228,7 +217,6 @@ fun MapLibreMapView(
                     .zoom(config.initialZoom)
                     .build()
 
-                // 应用初始图层状态
                 applyAllLayers(
                     style = style,
                     config = config,
@@ -236,6 +224,12 @@ fun MapLibreMapView(
                     hillshadeOn = hillshadeEnabled,
                     contourOn = contourEnabled,
                 )
+
+                layerOverrides.forEach { (id, visible) ->
+                    setLayerVisible(style, id, visible)
+                }
+
+                availableLayers = collectSwitchableLayers(style)
 
                 MapRuntime.attach(style, map)
             }
@@ -263,6 +257,10 @@ fun MapLibreMapView(
                 hillshadeOn = hillshadeEnabled,
                 contourOn = contourEnabled,
             )
+            layerOverrides.forEach { (id, visible) ->
+                setLayerVisible(style, id, visible)
+            }
+            availableLayers = collectSwitchableLayers(style)
         }
     }
 
@@ -306,153 +304,177 @@ fun MapLibreMapView(
 
         // ---------- 定位按钮 ----------
         if (config.showLocationButton) {
-            FloatingActionButton(
-                onClick = {
-                    val lc = mapRef?.locationComponent
-                    val activated = lc?.isLocationComponentActivated == true
-                    val isTracking = activated &&
-                            lc!!.isLocationComponentEnabled &&
-                            lc.cameraMode == CameraMode.TRACKING
+            Box(
+                modifier = Modifier.matchParentSize(),
+            ) {
+                FloatingActionButton(
+                    onClick = {
+                        val lc = mapRef?.locationComponent
+                        val activated = lc?.isLocationComponentActivated == true
+                        val isTracking = activated &&
+                                lc!!.isLocationComponentEnabled &&
+                                lc.cameraMode == CameraMode.TRACKING
 
-                    when {
-                        !locationEnabled -> {
-                            locationEnabled = true
-                            onUserLocationChange?.invoke(true)
-                            if (activated) {
-                                runCatching {
-                                    mapRef?.let { map ->
-                                        safeEnableLocation(map, true)
-                                        safeSetCameraMode(map, CameraMode.TRACKING)
+                        when {
+                            !locationEnabled -> {
+                                locationEnabled = true
+                                onUserLocationChange?.invoke(true)
+                                if (activated) {
+                                    runCatching {
+                                        mapRef?.let { map ->
+                                            safeEnableLocation(map, true)
+                                            safeSetCameraMode(map, CameraMode.TRACKING)
+                                        }
                                     }
                                 }
                             }
-                        }
-                        isTracking -> {
-                            locationEnabled = false
-                            onUserLocationChange?.invoke(false)
-                        }
-                        else -> {
-                            runCatching {
-                                mapRef?.let { safeSetCameraMode(it, CameraMode.TRACKING) }
+                            isTracking -> {
+                                locationEnabled = false
+                                onUserLocationChange?.invoke(false)
+                            }
+                            else -> {
+                                runCatching {
+                                    mapRef?.let { safeSetCameraMode(it, CameraMode.TRACKING) }
+                                }
                             }
                         }
-                    }
-                },
-                modifier = Modifier
-                    .align(config.locationButtonAlignment)
-                    .padding(config.buttonPadding),
-                containerColor = if (locationEnabled) {
-                    MaterialTheme.colorScheme.primaryContainer
-                } else {
-                    MaterialTheme.colorScheme.surface
-                },
-                contentColor = if (locationEnabled) {
-                    MaterialTheme.colorScheme.onPrimaryContainer
-                } else {
-                    MaterialTheme.colorScheme.onSurface
-                },
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.LocationOn,
-                    contentDescription = if (locationEnabled) "关闭位置显示" else "显示我的位置",
-                )
-            }
-        }
-
-        // ---------- 图层按钮 + 下拉列表 ----------
-        if (config.showLayerButton) {
-            val anyOn = satelliteEnabled || hillshadeEnabled || contourEnabled
-
-            Box(
-                modifier = Modifier
-                    .align(config.layerButtonAlignment)
-                    .padding(config.buttonPadding),
-            ) {
-                FloatingActionButton(
-                    onClick = { menuExpanded = true },
-                    containerColor = if (anyOn) {
+                    },
+                    modifier = Modifier
+                        .align(config.locationButtonAlignment)
+                        .padding(config.buttonPadding),
+                    containerColor = if (locationEnabled) {
                         MaterialTheme.colorScheme.primaryContainer
                     } else {
                         MaterialTheme.colorScheme.surface
                     },
-                    contentColor = if (anyOn) {
+                    contentColor = if (locationEnabled) {
                         MaterialTheme.colorScheme.onPrimaryContainer
                     } else {
                         MaterialTheme.colorScheme.onSurface
                     },
                 ) {
                     Icon(
-                        imageVector = LayersIcon,
-                        contentDescription = "图层设置",
-                    )
-                }
-
-                DropdownMenu(
-                    expanded = menuExpanded,
-                    onDismissRequest = { menuExpanded = false },
-                ) {
-                    LayerSwitchItem(
-                        label = "卫星影像",
-                        checked = satelliteEnabled,
-                        onCheckedChange = {
-                            satelliteEnabled = it
-                            onSatelliteChange?.invoke(it)
-                        },
-                    )
-                    LayerSwitchItem(
-                        label = "地形阴影",
-                        checked = hillshadeEnabled,
-                        onCheckedChange = {
-                            hillshadeEnabled = it
-                            onHillshadeChange?.invoke(it)
-                        },
-                    )
-                    LayerSwitchItem(
-                        label = "等高线",
-                        checked = contourEnabled,
-                        onCheckedChange = {
-                            contourEnabled = it
-                            onContourChange?.invoke(it)
-                        },
+                        imageVector = Icons.Filled.LocationOn,
+                        contentDescription = if (locationEnabled) "关闭位置显示" else "显示我的位置",
                     )
                 }
             }
+        }
+
+        // ---------- 图层控制组件 ----------
+        if (config.showLayerButton) {
+            val baseMapOptions = remember {
+                listOf(
+                    BaseMapOption(BASE_MAP_SATELLITE, "卫星影像"),
+                    BaseMapOption(BASE_MAP_TERRAIN, "地形阴影"),
+                )
+            }
+            val overlays = remember(contourEnabled) {
+                listOf(
+                    OverlayToggle(OVERLAY_CONTOUR, "等高线", contourEnabled),
+                )
+            }
+
+            MapLayersControl(
+                modifier = Modifier.matchParentSize(),
+                alignment = config.layerButtonAlignment,
+                padding = config.buttonPadding,
+
+                baseMapOptions = baseMapOptions,
+                selectedBaseMapId = selectedBaseMap,
+                onBaseMapSelect = { id ->
+                    if (id != selectedBaseMap) {
+                        selectedBaseMap = id
+                        when (id) {
+                            BASE_MAP_SATELLITE -> {
+                                onSatelliteChange?.invoke(true)
+                                onHillshadeChange?.invoke(false)
+                            }
+                            BASE_MAP_TERRAIN -> {
+                                onSatelliteChange?.invoke(false)
+                                onHillshadeChange?.invoke(true)
+                            }
+                        }
+                    }
+                },
+
+                overlays = overlays,
+                onOverlayToggle = { id, enabled ->
+                    when (id) {
+                        OVERLAY_CONTOUR -> {
+                            contourEnabled = enabled
+                            onContourChange?.invoke(enabled)
+                        }
+                    }
+                },
+
+                layers = availableLayers,
+                layerFilter = config.layerFilter,
+                onLayerVisibilityChange = { id, visible ->
+                    val style = styleRef
+                    if (style != null) {
+                        setLayerVisible(style, id, visible)
+                        layerOverrides = layerOverrides + (id to visible)
+                        availableLayers = availableLayers.map {
+                            if (it.id == id) it.copy(visible = visible) else it
+                        }
+                    }
+                },
+                onLayersReset = {
+                    val style = styleRef
+                    if (style != null) {
+                        layerOverrides.keys.forEach { id ->
+                            setLayerVisible(style, id, true)
+                        }
+                        layerOverrides = emptyMap()
+                        availableLayers = collectSwitchableLayers(style)
+                    }
+                },
+            )
         }
     }
 }
 
 // =============================================================================================
-// 辅助 Composable
+// 图层检索
 // =============================================================================================
 
-@Composable
-private fun LayerSwitchItem(
-    label: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit,
-) {
-    DropdownMenuItem(
-        text = { Text(label) },
-        trailingIcon = {
-            Switch(
-                checked = checked,
-                onCheckedChange = onCheckedChange,
-            )
-        },
-        onClick = { onCheckedChange(!checked) },
-    )
+private fun collectSwitchableLayers(style: Style): List<LayerEntry> {
+    return style.layers.mapNotNull { layer ->
+        if (layer.id.startsWith("vela-")) return@mapNotNull null
+        if (layer.id in BUILTIN_SATELLITE_LAYERS) return@mapNotNull null
+
+        val type = when (layer) {
+            is SymbolLayer -> "symbol"
+            is LineLayer -> "line"
+            is FillLayer -> "fill"
+            is RasterLayer -> "raster"
+            is CircleLayer -> "circle"
+            is HillshadeLayer -> "hillshade"
+            is FillExtrusionLayer -> "fill-extrusion"
+            else -> return@mapNotNull null
+        }
+
+        LayerEntry(
+            id = layer.id,
+            type = type,
+            visible = layer.visibility.value == Property.VISIBLE,
+        )
+    }
+}
+
+private fun setLayerVisible(style: Style, id: String, visible: Boolean) {
+    runCatching {
+        style.getLayer(id)?.setProperties(
+            PropertyFactory.visibility(if (visible) Property.VISIBLE else Property.NONE),
+        )
+    }
 }
 
 // =============================================================================================
 // 内部逻辑
 // =============================================================================================
 
-/**
- * 读取样式 JSON，动态注入 DEM 源定义，构建 Style.Builder。
- *
- * 支持 asset:// / file:// / http(s):// 三种 URI。
- * 如果读取失败或样式不需要 DEM，回退到原始 URI。
- */
 private fun buildStyleWithDemInjection(
     context: Context,
     styleUri: String,
@@ -477,7 +499,6 @@ private fun buildStyleWithDemInjection(
     }.getOrNull()
 
     return if (json != null) {
-        // 注入 DEM 源（幂等：若已存在则原样返回）
         val modifiedJson = TerrainSupport.injectDemSourceIntoStyleJson(
             json = json,
             demTiles = demTiles,
@@ -485,15 +506,10 @@ private fun buildStyleWithDemInjection(
         )
         Style.Builder().fromJson(modifiedJson)
     } else {
-        // 回退：直接用原始 URI（适用于 MapTiler 等远程样式）
         Style.Builder().fromUri(styleUri)
     }
 }
 
-/**
- * 统一应用卫星、地形、等高线三类图层。
- * 在 setStyle 回调和状态变化 effect 里都会调用，幂等。
- */
 private fun applyAllLayers(
     style: Style,
     config: MapConfig,
@@ -501,7 +517,6 @@ private fun applyAllLayers(
     hillshadeOn: Boolean,
     contourOn: Boolean,
 ) {
-    // 卫星（含深度兜底）
     SatelliteSupport.apply(
         style = style,
         on = satelliteOn,
@@ -514,7 +529,6 @@ private fun applyAllLayers(
         deepAnchorLayerId = BUILTIN_SATELLITE_ANCHOR,
     )
 
-    // 地形 + 等高线（锚在第一个符号层之下）
     TerrainSupport.apply(
         style = style,
         hillshadeOn = hillshadeOn,
@@ -529,7 +543,6 @@ private fun applyAllLayers(
     )
 }
 
-/** 第一个符号层的 id；地形/等高线插在其下方，保证标签不被覆盖。 */
 private fun firstSymbolLayerId(style: Style): String? =
     style.layers.firstOrNull { it is SymbolLayer }?.id
 

@@ -12,6 +12,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import org.kori.plugin.geo.map.MapConfig
 import org.kori.plugin.geo.map.MapLibreMapView
 
 /**
@@ -39,7 +40,8 @@ fun GeokoriMapScreen() {
     Box(modifier = Modifier.fillMaxSize()) {
         // MapLibre 地图：铺满全屏
         MapLibreMapView(
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier.fillMaxSize(),
+            config = MapConfig.Default,   // 或按需覆盖字段
         )
         // 如果有其他控件，用 windowInsetsPadding 避让系统栏
         // 例如：

@@ -14,12 +14,10 @@ import timber.log.Timber
  *
  * ## 山体阴影
  * 用 [HillshadeLayer] 从 Terrarium DEM 栅格渲染光照阴影。
- * DEM 源通过 [injectDemSourceIntoStyleJson] **动态注入**到样式 JSON 中——
- * MapLibre Android 13.6.1 的 `RasterDemSource` 没有公开的 `encoding` setter，
- * 只有通过样式 JSON 的 `"encoding": "terrarium"` 字段才能正确解析 Terrarium 编码。
+ * DEM 源通过 [injectDemSourceIntoStyleJson] 动态注入到样式 JSON 中。
  *
  * ## 等高线
- * 用预生成的 MVT 矢量瓦片（MapLibre Native 不支持从 raster-dem 实时生成等高线）。
+ * 用预生成的 MVT 矢量瓦片。
  *
  * 所有方法幂等。
  */
@@ -31,7 +29,6 @@ object TerrainSupport {
     const val CONTOUR_LINE_LAYER = "vela-contour-line-layer"
     const val CONTOUR_LABEL_LAYER = "vela-contour-label-layer"
 
-    /** 默认 DEM 瓦片模板（与 [TerrariumDemTiles] 一致，允许注入时替换）。 */
     private const val DEFAULT_DEM_TILES =
         "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
 
@@ -41,36 +38,26 @@ object TerrainSupport {
 
     /**
      * 把 DEM 源定义动态注入到样式 JSON 字符串中（幂等）。
-     *
-     * 检查 `"vela-dem-src"` 是否已存在，不存在则在 `"sources": {` 后插入源定义。
-     * 这是 MapLibre Android 13.6.1 下唯一能为 raster-dem 指定 `terrarium` 编码的方式。
-     *
-     * @param json         原始样式 JSON
-     * @param demTiles     DEM 瓦片 URL 模板列表
-     * @param maxZoom      DEM 源最大 zoom
      */
     fun injectDemSourceIntoStyleJson(
         json: String,
         demTiles: List<String> = listOf(DEFAULT_DEM_TILES),
         maxZoom: Float = 15f,
     ): String {
-        // 已经注入过 → 直接返回
         if (json.contains("\"$DEM_SRC\"")) return json
 
-        // 查找 "sources": { 位置
         val sourcesKey = "\"sources\""
         val sourcesIdx = json.indexOf(sourcesKey)
         if (sourcesIdx < 0) {
-            android.util.Log.w("TerrainSupport", "样式 JSON 缺少 sources 字段，跳过 DEM 注入")
+            Timber.tag("TerrainSupport").w("样式 JSON 缺少 sources 字段，跳过 DEM 注入")
             return json
         }
         val braceIdx = json.indexOf('{', sourcesIdx)
         if (braceIdx < 0) {
-            android.util.Log.w("TerrainSupport", "sources 字段格式异常，跳过 DEM 注入")
+            Timber.tag("TerrainSupport").w("sources 字段格式异常，跳过 DEM 注入")
             return json
         }
 
-        // 构建源定义 JSON
         val tilesJson = demTiles.joinToString(",") { "\"$it\"" }
         val demSourceJson = buildString {
             append("\"$DEM_SRC\":{")
@@ -82,7 +69,6 @@ object TerrainSupport {
             append("},")
         }
 
-        // 在 sources 的 { 之后插入
         return json.substring(0, braceIdx + 1) + demSourceJson + json.substring(braceIdx + 1)
     }
 
@@ -90,12 +76,6 @@ object TerrainSupport {
     // 山体阴影
     // =========================================================================================
 
-    /**
-     * 幂等创建 / 移除山体阴影层。
-     *
-     * 前提：DEM 源已经通过 [injectDemSourceIntoStyleJson] 注入到样式 JSON。
-     * 如果样式里没有 [DEM_SRC]，安全空转。
-     */
     fun ensureHillshade(
         style: Style,
         on: Boolean,
@@ -109,13 +89,12 @@ object TerrainSupport {
         }
         if (style.getLayer(HILLSHADE_LAYER) != null) return
         if (style.getSource(DEM_SRC) == null) {
-            Timber.tag("TerrainSupport").w("DEM 源 '$DEM_SRC' 未找到，请确认已注入样式 JSON")
+            android.util.Log.w("TerrainSupport", "DEM 源 '$DEM_SRC' 未找到")
             return
         }
 
         val layer = HillshadeLayer(HILLSHADE_LAYER, DEM_SRC).withProperties(
             PropertyFactory.hillshadeExaggeration(exaggeration),
-            // ★ 颜色必须用 Expression.literal 包裹
             PropertyFactory.hillshadeShadowColor(
                 Expression.literal(if (darkTheme) "#0a1018" else "#6b7280"),
             ),
@@ -126,7 +105,6 @@ object TerrainSupport {
                 Expression.literal(if (darkTheme) "#0a1018" else "#9aa0a6"),
             ),
         )
-        // ★ 用 setter，不能直接赋值
         layer.setMaxZoom(16f)
 
         runCatching {
@@ -160,10 +138,9 @@ object TerrainSupport {
             runCatching { style.addSource(VectorSource(CONTOUR_SRC, url)) }
         }
 
-        // ---- 线层 ----
         val lineLayer = LineLayer(CONTOUR_LINE_LAYER, CONTOUR_SRC).apply {
             setSourceLayer(sourceLayer)
-            setMinZoom(minZoomValue)   // ★ setter
+            setMinZoom(minZoomValue)
             setMaxZoom(maxZoomValue)
             setProperties(
                 PropertyFactory.lineColor(if (darkTheme) "#8A8F98" else "#A9A29A"),
@@ -179,7 +156,6 @@ object TerrainSupport {
             )
         }
 
-        // ---- 标注层 ----
         val labelLayer = SymbolLayer(CONTOUR_LABEL_LAYER, CONTOUR_SRC).apply {
             setSourceLayer(sourceLayer)
             setMinZoom(minZoomValue + 2f)
