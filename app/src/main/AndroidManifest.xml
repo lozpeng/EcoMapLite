@@ -31,7 +31,7 @@
         android:theme="@style/Theme.ComposePluginSample">
         <provider
             android:name=".HostProvider"
-            android:authorities="com.combo.plugin.sample.provider"
+            android:authorities="org.geokori.plugin.data.provider"
             android:enabled="true"
             android:exported="true"
             tools:ignore="ExportedContentProvider" />

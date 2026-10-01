@@ -7,7 +7,7 @@ import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LocationOn
@@ -341,6 +341,10 @@ fun MapLibreMapView(
                     },
                     modifier = Modifier
                         .align(config.locationButtonAlignment)
+                        .offset(
+                            x = config.locationButtonOffsetX,
+                            y = config.locationButtonOffsetY,
+                        )
                         .padding(config.buttonPadding),
                     containerColor = if (locationEnabled) {
                         MaterialTheme.colorScheme.primaryContainer
@@ -379,6 +383,8 @@ fun MapLibreMapView(
                 modifier = Modifier.matchParentSize(),
                 alignment = config.layerButtonAlignment,
                 padding = config.buttonPadding,
+                offsetX = config.layerButtonOffsetX,
+                offsetY = config.layerButtonOffsetY,
 
                 baseMapOptions = baseMapOptions,
                 selectedBaseMapId = selectedBaseMap,

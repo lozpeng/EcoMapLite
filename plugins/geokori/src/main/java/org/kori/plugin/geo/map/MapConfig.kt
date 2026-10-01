@@ -44,9 +44,17 @@ data class MapConfig(
     // ---------- 浮动按钮 ----------
     val showLocationButton: Boolean = true,
     val showLayerButton: Boolean = true,
+
     val locationButtonAlignment: Alignment = Alignment.BottomEnd,
-    val layerButtonAlignment: Alignment = Alignment.TopEnd,
     val buttonPadding: Dp = 16.dp,
+    /** 定位按钮垂直偏移（正值向下）。 */
+    val locationButtonOffsetX: Dp = 0.dp,
+    val locationButtonOffsetY: Dp = (-100).dp,
+
+    val layerButtonAlignment: Alignment = Alignment.BottomEnd,
+    /** 图层按钮垂直偏移（正值向下）。默认 50dp 让按钮避开状态栏 / 顶部搜索框。 */
+    val layerButtonOffsetX: Dp = 0.dp,
+    val layerButtonOffsetY: Dp = (-60).dp,
 
     // ---------- 初始视角 ----------
     val initialCenterLat: Double = 35.0,

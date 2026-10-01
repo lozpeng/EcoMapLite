@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -28,8 +29,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TriStateCheckbox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -39,11 +42,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import org.kori.plugin.geo.map.layer.LayerFilter
+
 // =============================================================================================
 // 数据模型
 // =============================================================================================
@@ -65,6 +70,27 @@ data class LayerEntry(
     val visible: Boolean,
 )
 
+/**
+ * 一组相关图层（按 id 首段聚合）。
+ */
+data class LayerGroup(
+    val key: String,
+    val displayName: String,
+    val entries: List<LayerEntry>,
+) {
+    /** 群组整体可见状态：全开 / 全关 / 部分开。 */
+    val state: ToggleableState
+        get() {
+            if (entries.isEmpty()) return ToggleableState.Off
+            val visibleCount = entries.count { it.visible }
+            return when (visibleCount) {
+                0 -> ToggleableState.Off
+                entries.size -> ToggleableState.On
+                else -> ToggleableState.Indeterminate
+            }
+        }
+}
+
 // =============================================================================================
 // 组件
 // =============================================================================================
@@ -72,13 +98,18 @@ data class LayerEntry(
 /**
  * 图层控制组件。
  *
- * @param layerFilter  图层过滤器（白名单模式）。默认 [LayerFilter.Default]。
+ * 支持图层群组：按 id 首段聚合，群组标题行提供三态复选框批量开关整组。
+ *
+ * @param groupKeyExtractor 群组 key 提取器；默认 [LayerGroupNaming.groupKeyOf]
+ * @param groupDisplayName  群组显示名映射；默认 [LayerGroupNaming.displayName]（中文）
  */
 @Composable
 fun MapLayersControl(
     modifier: Modifier = Modifier,
     alignment: Alignment = Alignment.TopEnd,
     padding: Dp = 16.dp,
+    offsetX: Dp = 0.dp,
+    offsetY: Dp = 0.dp,
 
     // ---------- 底图 ----------
     baseMapOptions: List<BaseMapOption> = emptyList(),
@@ -92,14 +123,25 @@ fun MapLayersControl(
     // ---------- 地图图层 ----------
     layers: List<LayerEntry> = emptyList(),
     layerFilter: LayerFilter = LayerFilter.Default,
+
+    // ---------- 分组配置 ----------
+    groupKeyExtractor: (LayerEntry) -> String = LayerGroupNaming::groupKeyOf,
+    groupDisplayName: (String) -> String = LayerGroupNaming::displayName,
+    groupDefaultExpanded: Boolean = true,
+
+    // ---------- 图层开关回调 ----------
     onLayerVisibilityChange: (String, Boolean) -> Unit = { _, _ -> },
     onLayersReset: (() -> Unit)? = null,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     var layersExpanded by remember { mutableStateOf(false) }
+    val groupExpandedStates = remember { mutableStateMapOf<String, Boolean>() }
 
     val filteredLayers = remember(layers, layerFilter) {
         layerFilter.apply(layers)
+    }
+    val groups = remember(filteredLayers, groupKeyExtractor, groupDisplayName) {
+        groupLayers(filteredLayers, groupKeyExtractor, groupDisplayName)
     }
 
     val anyOverlayOn = overlays.any { it.enabled }
@@ -110,6 +152,7 @@ fun MapLayersControl(
         Box(
             modifier = Modifier
                 .align(alignment)
+                .offset(x = offsetX, y = offsetY)
                 .padding(padding),
         ) {
             FloatingActionButton(
@@ -161,8 +204,8 @@ fun MapLayersControl(
                     }
                 }
 
-                // ==================== 地图图层（可展开） ====================
-                if (filteredLayers.isNotEmpty()) {
+                // ==================== 地图图层（按群组组织） ====================
+                if (groups.isNotEmpty()) {
                     if (baseMapOptions.isNotEmpty() || overlays.isNotEmpty()) SectionDivider()
                     ExpandableHeader(
                         title = "地图图层",
@@ -174,19 +217,31 @@ fun MapLayersControl(
                     )
 
                     if (layersExpanded) {
-                        // Column + verticalScroll，不用 LazyColumn（避免 DropdownMenu 固有测量崩溃）
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .heightIn(max = 320.dp)
+                                .heightIn(max = 360.dp)
                                 .verticalScroll(rememberScrollState())
                                 .padding(horizontal = 4.dp),
                         ) {
-                            filteredLayers.forEach { entry ->
-                                LayerVisibilityItem(
-                                    entry = entry,
-                                    onToggle = { visible ->
-                                        onLayerVisibilityChange(entry.id, visible)
+                            groups.forEach { group ->
+                                LayerGroupItem(
+                                    group = group,
+                                    expanded = groupExpandedStates[group.key]
+                                        ?: groupDefaultExpanded,
+                                    onToggleExpand = {
+                                        groupExpandedStates[group.key] =
+                                            !(groupExpandedStates[group.key] ?: groupDefaultExpanded)
+                                    },
+                                    onToggleGroup = { targetVisible ->
+                                        group.entries.forEach { entry ->
+                                            if (entry.visible != targetVisible) {
+                                                onLayerVisibilityChange(entry.id, targetVisible)
+                                            }
+                                        }
+                                    },
+                                    onToggleLayer = { id, visible ->
+                                        onLayerVisibilityChange(id, visible)
                                     },
                                 )
                             }
@@ -199,7 +254,74 @@ fun MapLayersControl(
 }
 
 // =============================================================================================
-// 内部 Composable
+// 群组相关内部 Composable
+// =============================================================================================
+
+@Composable
+private fun LayerGroupItem(
+    group: LayerGroup,
+    expanded: Boolean,
+    onToggleExpand: () -> Unit,
+    onToggleGroup: (Boolean) -> Unit,
+    onToggleLayer: (String, Boolean) -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onToggleExpand)
+                .padding(start = 8.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(4.dp))
+            Text(
+                text = group.displayName,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                text = "${group.entries.count { it.visible }}/${group.entries.size}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            TriStateCheckbox(
+                state = group.state,
+                onClick = {
+                    val targetVisible = group.state != ToggleableState.On
+                    onToggleGroup(targetVisible)
+                },
+                modifier = Modifier.size(36.dp),
+            )
+        }
+
+        if (expanded) {
+            group.entries.forEach { entry ->
+                LayerVisibilityItem(
+                    entry = entry,
+                    onToggle = { visible -> onToggleLayer(entry.id, visible) },
+                )
+            }
+        }
+
+        HorizontalDivider(
+            modifier = Modifier.padding(top = 4.dp),
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
+        )
+    }
+}
+
+// =============================================================================================
+// 通用内部 Composable
 // =============================================================================================
 
 @Composable
@@ -336,7 +458,7 @@ private fun LayerVisibilityItem(
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onToggle(!entry.visible) }
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .padding(start = 32.dp, end = 12.dp, top = 4.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
@@ -359,7 +481,34 @@ private fun LayerVisibilityItem(
         Switch(
             checked = entry.visible,
             onCheckedChange = onToggle,
-            modifier = Modifier.height(28.dp),
+            modifier = Modifier.height(24.dp),
+        )
+    }
+}
+
+// =============================================================================================
+// 群组聚合
+// =============================================================================================
+
+/**
+ * 按 [keyExtractor] 把过滤后的图层列表聚合为群组。
+ * 保持图层在源列表中的出现顺序。
+ */
+private fun groupLayers(
+    layers: List<LayerEntry>,
+    keyExtractor: (LayerEntry) -> String,
+    nameMapper: (String) -> String,
+): List<LayerGroup> {
+    val map = LinkedHashMap<String, MutableList<LayerEntry>>()
+    for (entry in layers) {
+        val key = keyExtractor(entry).ifBlank { entry.id }
+        map.getOrPut(key) { mutableListOf() }.add(entry)
+    }
+    return map.map { (key, list) ->
+        LayerGroup(
+            key = key,
+            displayName = nameMapper(key),
+            entries = list,
         )
     }
 }

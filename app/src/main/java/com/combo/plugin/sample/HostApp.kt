@@ -54,7 +54,7 @@ class HostApp : BaseHostApplication(), IPluginCrashCallback {
                         HostService10::class.java,
                     ),
                 )
-                setHostProviderAuthority("com.combo.plugin.sample.provider")
+                setHostProviderAuthority("org.geokori.plugin.data.provider")
             }
 
             setValidationStrategy(ValidationStrategy.UserGrant)
