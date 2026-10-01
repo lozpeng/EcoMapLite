@@ -52,6 +52,7 @@ class HomeViewModel(
                         installedPlugins = PluginManager.getAllInstallPlugins(),
                         guideEntryClass = PluginManager.getPluginInstance(PLUGIN_GUIDE),
                         geokoriEntryClass = PluginManager.getPluginInstance(PLUGIN_GEOKORI),
+                        animalEntryClass = PluginManager.getPluginInstance(PLUGIN_ANIMAL),
                         exampleEntryClass = PluginManager.getPluginInstance(PLUGIN_EXAMPLE),
                         settingEntryClass = PluginManager.getPluginInstance(PLUGIN_SETTING),
                     )

@@ -87,7 +87,7 @@ include(":ui:ui-geokori")
 include(":plugins:common")
 include(":plugins:home")
 include(":plugins:geokori")
-
+include(":plugins:wildlife")
 
 include(":plugins:guide")
 include(":plugins:setting")

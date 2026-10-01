@@ -37,6 +37,7 @@
             <option value="$PROJECT_DIR$/plugins/guide" />
             <option value="$PROJECT_DIR$/plugins/home" />
             <option value="$PROJECT_DIR$/plugins/setting" />
+            <option value="$PROJECT_DIR$/plugins/wildlife" />
             <option value="$PROJECT_DIR$/ui" />
             <option value="$PROJECT_DIR$/ui/ui-geokori" />
           </set>

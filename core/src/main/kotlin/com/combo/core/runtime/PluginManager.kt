@@ -1,5 +1,3 @@
-
-
 package com.combo.core.runtime
 
 import android.app.Application
@@ -11,11 +9,9 @@ import com.combo.core.proxy.ProxyManager
 import com.combo.core.runtime.InitState.INITIALIZED
 import com.combo.core.runtime.InitState.INITIALIZING
 import com.combo.core.runtime.InitState.NOT_INITIALIZED
-import com.combo.core.runtime.ValidationStrategy.Insecure
-import com.combo.core.runtime.ValidationStrategy.Strict
-import com.combo.core.runtime.ValidationStrategy.UserGrant
 import com.combo.core.runtime.installer.InstallerManager
 import com.combo.core.runtime.resource.PluginResourcesManager
+import com.combo.core.runtime.service.ServiceRegistry
 import com.combo.core.security.auth.AuthorizationManager
 import com.combo.core.security.permission.PermissionLevel
 import com.combo.core.security.permission.RequiresPermission
@@ -31,42 +27,16 @@ import org.koin.core.context.GlobalContext.startKoin
 import timber.log.Timber
 import kotlin.reflect.jvm.javaMethod
 
-/**
- * 插件管理器的初始化状态。
- * 初始化状态：
- * - [NOT_INITIALIZED]：未初始化。
- * - [INITIALIZING]：初始化中。
- * - [INITIALIZED]：已初始化。
- */
 enum class InitState { NOT_INITIALIZED, INITIALIZING, INITIALIZED }
 
-/**
- * 定义插件安装时的签名校验策略。
- * 校验策略：
- * - [Strict]：严格模式，只允许与宿主签名完全一致的插件。
- * - [UserGrant]：用户授权模式，当遇到未知签名时，通过全局的 `IAuthorizationHandler` 回调请求用户授权。
- * - [Insecure]：不安全模式，完全禁用签名校验。
- */
-enum class ValidationStrategy {
-    Strict,
-    UserGrant,
-    Insecure
-}
+enum class ValidationStrategy { Strict, UserGrant, Insecure }
 
-/**
- * 插件框架核心管理器
- *
- * 这是一个单例对象，作为整个插件框架的唯一公共API入口。
- * 它本身不包含复杂的业务逻辑，而是将所有请求转发给内部具体的、职责单一的管理器。
- */
 object PluginManager {
 
     private const val TAG = "PluginManager"
 
-    // 内部上下文，持有所有状态和管理器
     private var frameworkContext: PluginFrameworkContext? = null
 
-    // 公开暴露给外部的属性，从 frameworkContext 获取
     val initStateFlow: StateFlow<InitState>
         get() = requireContext().initState
     val loadedPluginsFlow: StateFlow<Map<String, LoadedPluginInfo>>
@@ -97,15 +67,6 @@ object PluginManager {
         return frameworkContext ?: throw IllegalStateException("PluginManager has not been initialized.")
     }
 
-    /**
-     * 初始化插件管理器。
-     *
-     * 初始化插件管理器时，会启动一个后台协程，用于加载插件。
-     * 插件加载完成后，会将插件的类索引和实例存储在内部状态中。
-     *
-     * @param context 应用上下文，用于访问插件资源和系统服务。
-     * @param onSetup 可选的插件加载代码块，用于在初始化完成后加载插件。
-     */
     @Synchronized
     fun initialize(
         context: Application,
@@ -146,10 +107,6 @@ object PluginManager {
         initStateFlow.first { it == INITIALIZED }
     }
 
-    /**
-     * 设置插件安装时的签名验证策略。
-     * API权限要求：[PermissionLevel.HOST] (硬性要求)
-     */
     @RequiresPermission(PermissionLevel.HOST, hardFail = true)
     suspend fun setValidationStrategy(strategy: ValidationStrategy) {
         if (::setValidationStrategy.javaMethod?.checkApiCaller() == false) return
@@ -157,14 +114,44 @@ object PluginManager {
         Timber.i("PluginManager: ValidationStrategy 已更新为: ${strategy::class.java.simpleName}")
     }
 
-    // --- API 转发层 ---
+    // ============ 新增：跨插件服务注册表 ============
 
     /**
-     * 启动插件
-     * API权限要求：[PermissionLevel.HOST]
-     * @param pluginId 插件ID
-     * @return 是否启动成功
+     * 当前所有已注册服务（响应式）。
+     * 依赖方通过 collect 该流自动感知服务注册/注销/更新。
      */
+    val servicesFlow: StateFlow<Map<String, ServiceRegistry.Entry>>
+        get() = ServiceRegistry.servicesFlow
+
+    /**
+     * 注册跨插件服务。
+     * @param clazz 服务接口类型（必须由宿主 ClassLoader 加载）
+     * @param service 服务实现实例
+     * @param pluginId 提供者插件 ID
+     */
+    fun <T : Any> registerService(clazz: Class<T>, service: T, pluginId: String) {
+        ServiceRegistry.register(clazz, service, pluginId)
+    }
+
+    /**
+     * 注册跨插件服务（pluginId 从 PluginContextHolder 获取）。
+     * 只能在 onLoad 期间调用。
+     */
+    fun <T : Any> registerService(clazz: Class<T>, service: T) {
+        ServiceRegistry.register(clazz, service)
+    }
+
+    /**
+     * 获取跨插件服务。
+     * @return 当前活动的服务实例，若提供者未加载则返回 null
+     */
+    fun <T : Any> getService(clazz: Class<T>): T? = ServiceRegistry.get(clazz)
+
+    /** 手动注销服务（一般不需要，插件卸载时框架自动清理） */
+    fun unregisterService(clazz: Class<*>) = ServiceRegistry.unregister(clazz)
+
+    // ============ 原有 API 转发层 ============
+
     @RequiresPermission(PermissionLevel.SELF)
     suspend fun launchPlugin(pluginId: String): Boolean {
         if (::launchPlugin.javaMethod?.checkApiCaller(targetPluginId = pluginId) == false) {
@@ -175,9 +162,10 @@ object PluginManager {
     }
 
     /**
-     * 卸载插件
-     * API权限要求：[PermissionLevel.HOST]
-     * @param pluginId 插件ID
+     * 卸载插件。
+     *
+     * ★ 关键变更：在 finally 中自动清理该插件注册的所有服务，
+     *   确保插件卸载/热更新后，旧的服务引用不会残留。
      */
     @RequiresPermission(PermissionLevel.SELF)
     suspend fun unloadPlugin(pluginId: String) {
@@ -185,14 +173,14 @@ object PluginManager {
             Timber.w("权限不足：插件卸载操作被拒绝 [pluginId: $pluginId]")
             return
         }
-        requireContext().lifecycleManager.unloadPlugin(pluginId)
+        try {
+            requireContext().lifecycleManager.unloadPlugin(pluginId)
+        } finally {
+            // 无论卸载成功与否，都清理该插件注册的服务
+            ServiceRegistry.unregisterAllByPlugin(pluginId)
+        }
     }
 
-    /**
-     * 加载所有已启用插件
-     * API权限要求：[PermissionLevel.HOST]
-     * @return 成功加载的插件数量
-     */
     @RequiresPermission(PermissionLevel.HOST)
     suspend fun loadEnabledPlugins(): Int {
         if (::loadEnabledPlugins.javaMethod?.checkApiCaller() == false) {
@@ -202,12 +190,6 @@ object PluginManager {
         return requireContext().lifecycleManager.loadEnabledPlugins()
     }
 
-    /**
-     * 获取插件接口
-     * @param interfaceClass 接口类
-     * @param className 类名
-     * @return 接口实例
-     */
     fun <T : Any> getInterface(interfaceClass: Class<T>, className: String): T? {
         try {
             val targetPluginId = requireContext().classIndex[className]
@@ -234,65 +216,30 @@ object PluginManager {
         }
     }
 
-    /**
-     * 获取插件实例
-     * @param pluginId 插件ID
-     * @return 插件实例
-     */
     fun getPluginInstance(pluginId: String): IPluginEntryClass? {
         return requireContext().pluginInstances.value[pluginId]
     }
 
-    /**
-     * 获取插件信息
-     * @param pluginId 插件ID
-     * @return 插件信息
-     */
     fun getPluginInfo(pluginId: String): LoadedPluginInfo? {
         return requireContext().loadedPlugins.value[pluginId]
     }
 
-    /**
-     * 获取所有已加载插件实例
-     * @return 所有已加载插件实例
-     */
     fun getAllPluginInstances(): Map<String, IPluginEntryClass> {
         return requireContext().pluginInstances.value
     }
 
-    /**
-     * 获取所有已安装插件
-     * @return 所有已安装插件
-     */
     fun getAllInstallPlugins(): List<PluginInfo> {
         return requireContext().xmlManager.getAllPlugins()
     }
 
-    /**
-     * 获取插件依赖者链
-     * @param pluginId 插件ID
-     * @return 插件依赖者链
-     */
     fun getPluginDependentsChain(pluginId: String): List<String> {
         return requireContext().dependencyManager.findDependentsRecursive(pluginId)
     }
 
-    /**
-     * 获取插件依赖链
-     * @param pluginId 插件ID
-     * @return 插件依赖链
-     */
     fun getPluginDependenciesChain(pluginId: String): List<String> {
         return requireContext().dependencyManager.findDependenciesRecursive(pluginId)
     }
 
-    /**
-     * 设置插件启用状态
-     * API权限要求：[PermissionLevel.HOST]
-     * @param pluginId 插件ID
-     * @param enabled 插件启用状态
-     * @return 是否设置成功
-     */
     @RequiresPermission(PermissionLevel.HOST)
     suspend fun setPluginEnabled(pluginId: String, enabled: Boolean): Boolean {
         if (::setPluginEnabled.javaMethod?.checkApiCaller(targetPluginId = pluginId) == false) {
@@ -312,9 +259,6 @@ object PluginManager {
         }
     }
 
-    /**
-     * 从宿主应用获取接口实例
-     */
     private fun <T : Any> getInterfaceFromHost(interfaceClass: Class<T>, className: String): T? {
         return try {
             val clazz = requireContext().application.classLoader.loadClass(className)

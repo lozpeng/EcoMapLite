@@ -215,6 +215,7 @@ private fun PluginScreenContent(pluginId: String, viewModel: HomeViewModel) {
         HomeViewModel.PLUGIN_GUIDE -> state.guideEntryClass
         HomeViewModel.PLUGIN_EXAMPLE -> state.exampleEntryClass
         HomeViewModel.PLUGIN_SETTING -> state.settingEntryClass
+        HomeViewModel.PLUGIN_ANIMAL ->state.animalEntryClass
         HomeViewModel.PLUGIN_GEOKORI ->state.geokoriEntryClass
         else -> null
     }
@@ -293,7 +294,7 @@ enum class AppDestinations(
     val isFloating: Boolean = false,
 ) {
     GeoKori("org.kori.plugin.geo", "地图", Icons.Default.Map),
-    ANIMAL("animal","动物", Icons.Default.Adb),
+    ANIMAL("org.kori.plugin.wildlife","动物", Icons.Default.Adb),
     PUBLISH("publish", "记录", Icons.Default.Add, isFloating = true),
     SETTING("setting", "设置", Icons.Default.Settings),
     PROFILE("profile", "我的", Icons.Default.Person);

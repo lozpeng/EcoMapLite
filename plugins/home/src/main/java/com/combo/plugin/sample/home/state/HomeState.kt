@@ -27,6 +27,7 @@ data class HomeState(
     var installedPlugins: List<PluginInfo> = emptyList(),
     val guideEntryClass: IPluginEntryClass? = null,
     val geokoriEntryClass:IPluginEntryClass? = null,
+    val animalEntryClass:IPluginEntryClass? = null,
     val exampleEntryClass: IPluginEntryClass? = null,
     val settingEntryClass: IPluginEntryClass? = null,
     val downloadingPlugins: Map<String, Float> = emptyMap(),

@@ -4,7 +4,6 @@ import androidx.compose.runtime.Composable
 import com.combo.core.api.IPluginEntryClass
 import com.combo.core.model.PluginContext
 import org.koin.core.module.Module
-import org.maplibre.android.MapLibre
 
 class PluginEntryClass : IPluginEntryClass {
     override val pluginModule: List<Module>
@@ -16,10 +15,8 @@ class PluginEntryClass : IPluginEntryClass {
     }
 
     override fun onLoad(context: PluginContext) {
-        //MapLibre.getInstance(context.application)
     }
 
     override fun onUnload() {
-
     }
 }

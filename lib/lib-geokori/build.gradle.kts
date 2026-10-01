@@ -59,8 +59,8 @@ dependencies {
 
     api(libs.photo.view)
     api(libs.glid)
-
-    implementation(project(":core"))
+    compileOnly(libs.maplibre.opengl)
+    compileOnly(project(":core"))   // 新增
     implementation(project(":ui:ui-geokori"))
 
     api(libs.coil.kt)

@@ -105,6 +105,10 @@ dependencies {
     //implementation(libs.combolite.core)
     coreLibraryDesugaring(libs.desugar.jdk.libs)
     // 插件核心库 本地依赖方式
+    implementation(libs.maplibre.opengl)
     implementation(projects.core)
+    implementation(project(":lib:lib-geokori"))
+
+
     implementation(projects.dependencies)
 }

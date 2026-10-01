@@ -20,8 +20,9 @@ aar2apk {
         module(":plugins:example")
         module(":plugins:setting")
         module(":plugins:geokori")
-    }
+        module(":plugins:wildlife")
 
+    }
     // 配置签名信息
 
     // 测试签名

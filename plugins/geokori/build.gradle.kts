@@ -35,9 +35,10 @@ android {
 
 dependencies {
     implementation(platform(libs.androidx.compose.bom))
+
+    compileOnly(project(":lib:lib-geokori"))
     compileOnly(projects.dependencies)
-    // 插件核心库 远程依赖方式
-//    compileOnly(libs.combolite.core)
+    compileOnly(libs.maplibre.opengl)
     // 插件核心库 本地依赖方式
     compileOnly(projects.core)
     compileOnly(projects.plugins.common)
