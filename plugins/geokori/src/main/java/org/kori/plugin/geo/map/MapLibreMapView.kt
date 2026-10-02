@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -19,6 +20,9 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.size
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -27,6 +31,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
@@ -166,6 +172,14 @@ fun MapLibreMapView(
      *    ```
      */
     onMapClick: ((position: LatLng, screenPosition: DpOffset) -> Unit)? = null,
+
+    /**
+     * 定位按钮**长按**回调（可选）。
+     *
+     * 典型用法：弹出卫星状态屏（见 [org.kori.plugin.geo.map.SatelliteStatusScreen]）。
+     * null = 长按无附加功能。短按行为（四态循环）不受影响。
+     */
+    onLocationButtonLongClick: (() -> Unit)? = null,
     trackRecording: Boolean = false,
     onTrackSaved: ((File) -> Unit)? = null,
     onTrackProgress: ((kept: Int, rejected: Int) -> Unit)? = null,
@@ -288,6 +302,9 @@ fun MapLibreMapView(
     /** 罗盘朝向数据源（仅 COMPASS 模式运行，省传感器耗电）。 */
     val compass = remember { CompassProvider(context) }
 
+    /** 罗盘模式下定位按钮箭头图标的旋转角（= 手机朝向，每帧更新）。 */
+    var compassIconDeg by remember { mutableFloatStateOf(0f) }
+
     // 罗盘随模式启停
     LaunchedEffect(bearingMode) {
         if (bearingMode == BearingMode.COMPASS) compass.start() else compass.stop()
@@ -382,6 +399,7 @@ fun MapLibreMapView(
                 BearingMode.COMPASS -> {
                     // 罗盘模式：地图缓动到手机顶部朝向（最短角路径，跨 0/360 不绕远）
                     val target = compass.headingDeg.toDouble()
+                    compassIconDeg = compass.headingDeg
                     val dB = ((target - camCurrent[2] + 540.0) % 360.0) - 180.0
                     camCurrent[2] = (camCurrent[2] + dB * kBrg + 360.0) % 360.0
                 }
@@ -867,7 +885,20 @@ fun MapLibreMapView(
                             x = config.locationButtonOffsetX,
                             y = config.locationButtonOffsetY,
                         )
-                        .padding(config.buttonPadding),
+                        .padding(config.buttonPadding)
+                        // ★ 长按：卫星状态等附加业务（短按不受影响：
+                        // detectTapGestures 只拦截长按，普通点击继续交给 FAB）
+                        .then(
+                            if (onLocationButtonLongClick != null) {
+                                Modifier.pointerInput(onLocationButtonLongClick) {
+                                    detectTapGestures(
+                                        onLongPress = { onLocationButtonLongClick() },
+                                    )
+                                }
+                            } else {
+                                Modifier
+                            },
+                        ),
                     containerColor = when {
                         !locationEnabled -> MaterialTheme.colorScheme.surface
                         bearingMode == BearingMode.COMPASS ->
@@ -882,13 +913,27 @@ fun MapLibreMapView(
                     },
                 ) {
                     Icon(
-                        imageVector = Icons.Filled.LocationOn,
+                        // ★ 按状态换图标：关闭/朝北 = 定位图钉；罗盘 = 箭头（指向手机朝向）
+                        imageVector = when {
+                            !locationEnabled -> Icons.Filled.LocationOn
+                            bearingMode == BearingMode.COMPASS -> Icons.Filled.Navigation
+                            else -> Icons.Filled.LocationOn
+                        },
                         contentDescription = when {
                             !locationEnabled -> "打开定位"
                             bearingMode == BearingMode.COMPASS -> "罗盘模式，点击关闭定位"
                             northResetDone -> "点击切换到罗盘模式"
                             else -> "点击恢复地图朝北"
                         },
+                        modifier = Modifier
+                            .size(22.dp)
+                            .then(
+                                if (locationEnabled && bearingMode == BearingMode.COMPASS) {
+                                    Modifier.rotate(compassIconDeg)
+                                } else {
+                                    Modifier
+                                },
+                            ),
                     )
                 }
             }
