@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LocationOn
-import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -20,8 +19,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -31,8 +28,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.DpOffset
@@ -77,6 +72,8 @@ import kotlin.math.abs
 import kotlin.math.exp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharedFlow
+import org.kori.plugin.geo.map.ui.BearingMode
+import org.kori.plugin.geo.map.ui.LocationFab
 import org.kori.plugin.geo.track.LiveTrackLayer
 import org.kori.plugin.geo.track.TrackMapCallbacks
 import org.kori.plugin.geo.track.TrackMediaRecord
@@ -164,12 +161,6 @@ fun MapLibreMapView(
      *  · 内部监听器**永远返回 false**，事件继续传递给 MapLibre 的图层/标注点击链路，
      *    不影响 `queryRenderedFeatures` 等图层点击功能
      *  · 典型用法：发送广播通知其它界面处理
-     *    ```kotlin
-     *    MapLibreMapView(
-     *        ...,
-     *        onMapClick = { pos, screenPos -> context.sendMapClickBroadcast(pos, screenPos) },
-     *    )
-     *    ```
      */
     onMapClick: ((position: LatLng, screenPosition: DpOffset) -> Unit)? = null,
 
@@ -309,12 +300,12 @@ fun MapLibreMapView(
     LaunchedEffect(bearingMode) {
         if (bearingMode == BearingMode.COMPASS) compass.start() else compass.stop()
     }
-    val lastFixHolder = remember { arrayOfNulls<LocationTracker.Fix>(1) }
 
-    // ★ onMapClick 的 holder：getMapAsync 闭包只注册一次监听器，
+    // onMapClick 的 holder：getMapAsync 闭包只注册一次监听器，
     // 通过 holder 读取"当前"回调，避免捕获到旧的 lambda 引用
     val onMapClickHolder = remember { arrayOfNulls<((LatLng, DpOffset) -> Unit)?>(1) }
     onMapClickHolder[0] = onMapClick
+    val lastFixHolder = remember { arrayOfNulls<LocationTracker.Fix>(1) }
 
     val trackDir = remember {
         File(context.filesDir, config.trackStorageDirName).apply { mkdirs() }
@@ -687,11 +678,11 @@ fun MapLibreMapView(
         val styleNow = styleRef ?: return@LaunchedEffect
         val map = mapRef ?: return@LaunchedEffect
 
-        // ★ 修复：自定义管线下也要渲染定位蓝点。
+        // ★ 自定义管线下也要渲染定位蓝点。
         // 激活 LocationComponent 但 useDefaultLocationEngine(false)——不用它的 GPS 引擎；
         // cameraMode = NONE——相机由上方缓动 ticker 驱动；
         // 位置在 collect 里通过 forceLocationUpdate() 喂入（见 pushFixToLocationComponent）。
-        // 这样蓝点显示的是滤波后的位置，与轨迹/相机完全一致，且不会双重定位耗电。
+        // 这样蓝点显示的是滤波后的位置，与相机/轨迹完全一致，且不会双重定位耗电。
         runCatching {
             val lc = map.locationComponent
             if (!lc.isLocationComponentActivated) {
@@ -732,7 +723,6 @@ fun MapLibreMapView(
 
                     camTarget[0] = fix.lat
                     camTarget[1] = fix.lng
-                    // ★ 相机朝向始终记录到目标值，ticker 按 bearingMode 决定用不用
                     fix.bearingDeg?.let { camTarget[2] = it.toDouble() }
                     camTarget[3] = config.customLocationTrackingZoom
                     camHasTarget[0] = true
@@ -759,7 +749,6 @@ fun MapLibreMapView(
 
                 camTarget[0] = fix.lat
                 camTarget[1] = fix.lng
-                // ★ 相机朝向始终记录到目标值，ticker 按 bearingMode 决定用不用
                 fix.bearingDeg?.let { camTarget[2] = it.toDouble() }
                 camTarget[3] = config.customLocationTrackingZoom
                 camHasTarget[0] = true
@@ -795,148 +784,103 @@ fun MapLibreMapView(
             modifier = Modifier.matchParentSize(),
         )
 
-        // 定位按钮
-        if (config.showLocationButton) {
-            Box(modifier = Modifier.matchParentSize()) {
-                FloatingActionButton(
-                    onClick = {
-                        if (config.useCustomLocationPipeline) {
-                            // ★★ 定位按钮四态循环 ★★
-                            //  第 1 次（关闭中）：打开定位 + 跟随 + 朝北
-                            //  第 2 次（跟随中）：地图吸附回正北（保持跟随）
-                            //  第 3 次（跟随中）：罗盘模式——地图随手机朝向旋转
-                            //  第 4 次（罗盘中）：关闭定位，恢复朝北，回到第 1 态
-                            // 支线：用户平移地图后点击 = 恢复跟随（保持当前朝向模式，
-                            //       不打乱循环计数）
-                            when {
-                                !locationEnabled -> {
-                                    locationEnabled = true
-                                    onUserLocationChange?.invoke(true)
-                                    customFollow = true
-                                    camNeedsSeed[0] = true
-                                    bearingMode = if (config.customLocationRotateToBearing) {
-                                        BearingMode.GPS_BEARING
-                                    } else {
-                                        BearingMode.NORTH
-                                    }
-                                    locateCycleState = 1
-                                    northResetDone = false
-                                    lastFixHolder[0]?.let { fix ->
-                                        camTarget[0] = fix.lat
-                                        camTarget[1] = fix.lng
-                                        fix.bearingDeg?.let { camTarget[2] = it.toDouble() }
-                                        camTarget[3] = config.customLocationTrackingZoom
-                                        camHasTarget[0] = true
-                                    }
-                                }
-                                !customFollow -> {
-                                    // 平移后恢复跟随，保持当前朝向模式
-                                    customFollow = true
-                                    camNeedsSeed[0] = true
-                                    lastFixHolder[0]?.let { fix ->
-                                        camTarget[0] = fix.lat
-                                        camTarget[1] = fix.lng
-                                        camTarget[3] = config.customLocationTrackingZoom
-                                        camHasTarget[0] = true
-                                    }
-                                }
-                                locateCycleState == 2 -> {
-                                    // 第 4 次点击：关闭定位，恢复朝北
-                                    bearingMode = BearingMode.NORTH
-                                    locateCycleState = 0
-                                    northResetDone = false
-                                    camCurrent[2] = 0.0
-                                    camLastWrite[2] = Double.NaN
-                                    runCatching {
-                                        mapRef?.moveCamera(CameraUpdateFactory.bearingTo(0.0))
-                                    }
-                                    locationEnabled = false
-                                    onUserLocationChange?.invoke(false)
-                                    customFollow = false
-                                }
-                                !northResetDone -> {
-                                    // 第 2 次点击：地图吸附回正北（保持跟随）
-                                    bearingMode = BearingMode.NORTH
-                                    northResetDone = true
-                                    camCurrent[2] = 0.0
-                                    camLastWrite[2] = Double.NaN
-                                    runCatching {
-                                        mapRef?.moveCamera(CameraUpdateFactory.bearingTo(0.0))
-                                    }
-                                }
-                                else -> {
-                                    // 第 3 次点击：罗盘模式
-                                    bearingMode = BearingMode.COMPASS
-                                    locateCycleState = 2
-                                }
-                            }
+        // ★ 定位按钮点击逻辑（四态循环 / 默认管线分流），由 LocationFab 组件分发
+        val locationFabOnClick: () -> Unit = {
+            if (config.useCustomLocationPipeline) {
+                // ★★ 定位按钮四态循环 ★★
+                //  第 1 次（关闭中）：打开定位 + 跟随 + 朝北
+                //  第 2 次（跟随中）：地图吸附回正北（保持跟随）
+                //  第 3 次（跟随中）：罗盘模式——地图随手机朝向旋转
+                //  第 4 次（罗盘中）：关闭定位，恢复朝北，回到第 1 态
+                // 支线：用户平移地图后点击 = 恢复跟随（保持当前朝向模式，
+                //       不打乱循环计数）
+                when {
+                    !locationEnabled -> {
+                        locationEnabled = true
+                        onUserLocationChange?.invoke(true)
+                        customFollow = true
+                        camNeedsSeed[0] = true
+                        bearingMode = if (config.customLocationRotateToBearing) {
+                            BearingMode.GPS_BEARING
                         } else {
-                            handleDefaultLocationButton(
-                                map = mapRef,
-                                locationEnabled = locationEnabled,
-                                setLocationEnabled = { locationEnabled = it },
-                                onUserLocationChange = onUserLocationChange,
-                            )
+                            BearingMode.NORTH
                         }
-                    },
-                    modifier = Modifier
-                        .align(config.locationButtonAlignment)
-                        .offset(
-                            x = config.locationButtonOffsetX,
-                            y = config.locationButtonOffsetY,
-                        )
-                        .padding(config.buttonPadding)
-                        // ★ 长按：卫星状态等附加业务（短按不受影响：
-                        // detectTapGestures 只拦截长按，普通点击继续交给 FAB）
-                        .then(
-                            if (onLocationButtonLongClick != null) {
-                                Modifier.pointerInput(onLocationButtonLongClick) {
-                                    detectTapGestures(
-                                        onLongPress = { onLocationButtonLongClick() },
-                                    )
-                                }
-                            } else {
-                                Modifier
-                            },
-                        ),
-                    containerColor = when {
-                        !locationEnabled -> MaterialTheme.colorScheme.surface
-                        bearingMode == BearingMode.COMPASS ->
-                            MaterialTheme.colorScheme.tertiaryContainer
-                        else -> MaterialTheme.colorScheme.primaryContainer
-                    },
-                    contentColor = when {
-                        !locationEnabled -> MaterialTheme.colorScheme.onSurface
-                        bearingMode == BearingMode.COMPASS ->
-                            MaterialTheme.colorScheme.onTertiaryContainer
-                        else -> MaterialTheme.colorScheme.onPrimaryContainer
-                    },
-                ) {
-                    Icon(
-                        // ★ 按状态换图标：关闭/朝北 = 定位图钉；罗盘 = 箭头（指向手机朝向）
-                        imageVector = when {
-                            !locationEnabled -> Icons.Filled.LocationOn
-                            bearingMode == BearingMode.COMPASS -> Icons.Filled.Navigation
-                            else -> Icons.Filled.LocationOn
-                        },
-                        contentDescription = when {
-                            !locationEnabled -> "打开定位"
-                            bearingMode == BearingMode.COMPASS -> "罗盘模式，点击关闭定位"
-                            northResetDone -> "点击切换到罗盘模式"
-                            else -> "点击恢复地图朝北"
-                        },
-                        modifier = Modifier
-                            .size(22.dp)
-                            .then(
-                                if (locationEnabled && bearingMode == BearingMode.COMPASS) {
-                                    Modifier.rotate(compassIconDeg)
-                                } else {
-                                    Modifier
-                                },
-                            ),
-                    )
+                        locateCycleState = 1
+                        northResetDone = false
+                        lastFixHolder[0]?.let { fix ->
+                            camTarget[0] = fix.lat
+                            camTarget[1] = fix.lng
+                            fix.bearingDeg?.let { camTarget[2] = it.toDouble() }
+                            camTarget[3] = config.customLocationTrackingZoom
+                            camHasTarget[0] = true
+                        }
+                    }
+                    !customFollow -> {
+                        // 平移后恢复跟随，保持当前朝向模式
+                        customFollow = true
+                        camNeedsSeed[0] = true
+                        lastFixHolder[0]?.let { fix ->
+                            camTarget[0] = fix.lat
+                            camTarget[1] = fix.lng
+                            camTarget[3] = config.customLocationTrackingZoom
+                            camHasTarget[0] = true
+                        }
+                    }
+                    locateCycleState == 2 -> {
+                        // 第 4 次点击：关闭定位，恢复朝北
+                        bearingMode = BearingMode.NORTH
+                        locateCycleState = 0
+                        northResetDone = false
+                        camCurrent[2] = 0.0
+                        camLastWrite[2] = Double.NaN
+                        runCatching {
+                            mapRef?.moveCamera(CameraUpdateFactory.bearingTo(0.0))
+                        }
+                        locationEnabled = false
+                        onUserLocationChange?.invoke(false)
+                        customFollow = false
+                    }
+                    !northResetDone -> {
+                        // 第 2 次点击：地图吸附回正北（保持跟随）
+                        bearingMode = BearingMode.NORTH
+                        northResetDone = true
+                        camCurrent[2] = 0.0
+                        camLastWrite[2] = Double.NaN
+                        runCatching {
+                            mapRef?.moveCamera(CameraUpdateFactory.bearingTo(0.0))
+                        }
+                    }
+                    else -> {
+                        // 第 3 次点击：罗盘模式
+                        bearingMode = BearingMode.COMPASS
+                        locateCycleState = 2
+                    }
                 }
+            } else {
+                handleDefaultLocationButton(
+                    map = mapRef,
+                    locationEnabled = locationEnabled,
+                    setLocationEnabled = { locationEnabled = it },
+                    onUserLocationChange = onUserLocationChange,
+                )
             }
+        }
+
+        // ★ 定位按钮（独立组件：单击四态循环 + 长按卫星状态）
+        if (config.showLocationButton) {
+            LocationFab(
+                locationEnabled = locationEnabled,
+                bearingMode = bearingMode,
+                northResetDone = northResetDone,
+                compassIconDeg = compassIconDeg,
+                onClick = locationFabOnClick,
+                onLongClick = onLocationButtonLongClick,
+                modifier = Modifier.matchParentSize(),
+                alignment = config.locationButtonAlignment,
+                offsetX = config.locationButtonOffsetX,
+                offsetY = config.locationButtonOffsetY,
+                padding = config.buttonPadding,
+            )
         }
 
         // 图层控制
@@ -1056,6 +1000,7 @@ private fun RecordingPanelOverlay(
     // ★ 修复：面板在所有状态都渲染（含"未记录"）。
     // 原来 if (!state.recording) return 导致开始按钮永远看不到——
     // 面板只在记录中才出现，而开始按钮恰恰只在未记录时才需要。
+
 
     TrackRecordingPanel(
         state = TrackServiceState(
@@ -1237,22 +1182,6 @@ private fun applyAllLayers(
 
 private fun firstSymbolLayerId(style: Style): String? =
     style.layers.firstOrNull { it is SymbolLayer }?.id
-
-// =============================================================================================
-// 定位按钮朝向模式（四态循环驱动）
-// =============================================================================================
-
-/** 跟随相机的朝向模式。 */
-private enum class BearingMode {
-    /** 朝北但不强制：采纳用户手势的旋转角（初始为北）。 */
-    NORTH,
-
-    /** 转向模式：地图缓动到运动方位角（GPS bearing，导航风格）。 */
-    GPS_BEARING,
-
-    /** 罗盘模式：地图缓动到手机顶部朝向（CompassProvider 驱动）。 */
-    COMPASS,
-}
 
 // =============================================================================================
 // LocationComponent 安全包装
