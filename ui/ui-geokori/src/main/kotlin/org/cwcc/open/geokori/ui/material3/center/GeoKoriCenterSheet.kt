@@ -74,7 +74,7 @@ fun rememberGeoKoriSheetState(
     flexibleSheetSize = FlexibleSheetSize(
         fullyExpanded = 0.9f,
         intermediatelyExpanded = 0.5f,
-        slightlyExpanded = 0.12f,
+        slightlyExpanded = 0.15f,
     ),
     isModal = isModal,
     skipSlightlyExpanded = false,

@@ -192,6 +192,41 @@ fun GeoKoriCenter(
     // 不应联动整体隐藏；只有用户手动把 Sheet 拖到底（自然 settle 到 Hidden）才整体隐藏。
     var expectSheetHide by remember { mutableStateOf(false) }
 
+    /* ---------- 广播监听：地图点击切换显隐 ---------- */
+    val receiver = remember {
+        object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                when (intent.action) {
+                    MapClickBroadCastConst.ACTION_MAP_CLICK -> {
+                        if (autoHideOnMapClick) {
+                            internalVisible = !internalVisible
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    DisposableEffect(context, autoHideOnMapClick) {
+        if (autoHideOnMapClick) {
+            val filter = IntentFilter().apply {
+                addAction(MapClickBroadCastConst.ACTION_MAP_CLICK)
+            }
+            ContextCompat.registerReceiver(
+                context,
+                receiver,
+                filter,
+                ContextCompat.RECEIVER_NOT_EXPORTED
+            )
+            onDispose {
+                try {
+                    context.unregisterReceiver(receiver)
+                } catch (_: Exception) { }
+            }
+        } else {
+            onDispose { }
+        }
+    }
     /* ---------- 可见性变化时同步控制 Sheet 的 hide / show ---------- */
     LaunchedEffect(internalVisible) {
         if (internalVisible) {
@@ -474,16 +509,33 @@ fun GeoKoriCenter(
             if (dragToHideEnabled && fullyHidden) {
                 HiddenDragHandle(
                     modifier = Modifier
-                        .align(
-                            when (adaptiveToolbarAlignment) {
-                                Alignment.Start -> Alignment.BottomStart
-                                Alignment.End -> Alignment.BottomEnd
-                                else -> Alignment.BottomCenter
-                            }
-                        )
-                        // 关键：拖动栏位于随容器一起下滑的 Box 内部，
+                        .align(Alignment.BottomCenter)
+                        // 关键1：拖动栏位于随容器一起下滑的 Box 内部，
                         // 需要反向抵消整体滑出位移，才能停留在屏幕上
-                        .offset { IntOffset(0, (-contentOffsetPx).toInt()) },
+                        // 关键2：横向居中于 GeoKoriCenter 自身宽度范围内——
+                        // 宽屏时 GeoKoriCenter 只占左/右半屏，拖动栏应跟随其宽度居中，
+                        // 而不是贴到屏幕角落
+                        .offset {
+                            // align(BottomCenter) 已将拖动栏中心置于容器中心（W/2）。
+                            // GeoKoriCenter 宽 w：
+                            //   居左 → 区域 [0, w]，中心 w/2，dx = w/2 - W/2 = (w - W)/2
+                            //   居右 → 区域 [W-w, W]，中心 W-w/2，dx = (W - w)/2
+                            //   全宽/居中 → dx = 0（w = W 时两式也收敛为 0）
+                            val dx = when (adaptiveToolbarAlignment) {
+                                Alignment.Start ->
+                                    adaptiveToolbarWidth?.let {
+                                        with(density) { ((it - containerWidthDp) / 2).toPx() }.toInt()
+                                    } ?: 0
+
+                                Alignment.End ->
+                                    adaptiveToolbarWidth?.let {
+                                        with(density) { ((containerWidthDp - it) / 2).toPx() }.toInt()
+                                    } ?: 0
+
+                                else -> 0
+                            }
+                            IntOffset(dx, (-contentOffsetPx).toInt())
+                        },
                     onReveal = ::revealCenter
                 )
             }
