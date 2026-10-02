@@ -5,26 +5,24 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
-import android.app.Service.START_NOT_STICKY
-import android.app.Service.START_STICKY
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
-import com.combo.core.api.IPluginService
 import com.combo.core.component.service.BasePluginService
 
 /**
  * 轨迹记录前台服务（ComboLite 插件版）。
  *
- * ## 与旧版 `HostTrackFgs` 的区别
+ * ## ★ B3 修复：继承 BasePluginService（原来手写 Service + IPluginService）
  *
- *  · 继承 [BasePluginService] 而非 `android.app.Service`
- *  · 所有 Service 能力通过 [proxyService] 访问真实的宿主 Service
- *  · 不需要宿主单独声明一个与业务耦合的 Service——宿主的
- *    `HostService1..N` 只需是空的 `BaseHostService` 即可
+ * 文档（四大组件指南）明确要求插件 Service 继承 [BasePluginService]：
+ *  · 框架自动注入 `proxyActivity` / `proxyService`，无需手写 `onAttach`
+ *  · 框架负责把真实宿主 Service 的所有生命周期事件转发给本类
+ *  · 原来 `realService = proxyService ?: this` 的回退分支是**坏的**——插件
+ *    Service 不是真实组件，`this` 上调用 `startForeground()` 会直接崩溃
  *
  * ## 与 Engine 的边界
  *
@@ -42,54 +40,43 @@ import com.combo.core.component.service.BasePluginService
  * TrackFgsBridge.stop(ctx)    → ACTION_STOP   → stopForeground + stopSelf
  * ```
  *
- * ## 宿主端配合
+ * ## 宿主端配合（★ 缺一不可）
  *
- * 宿主的 `HostApp.onFrameworkSetup()` 需要：
+ * 宿主 `Application.onCreate()`：
  * ```kotlin
  * PluginManager.proxyManager.setServicePool(listOf(
- *     HostService1::class.java,
- *     // ... 至少一个
+ *     HostService1::class.java,   // 至少一个，继承 BaseHostService 的空类
  * ))
  * ```
- * 且每个 `HostServiceN` 在宿主 `AndroidManifest.xml` 里必须声明
- * `android:foregroundServiceType="location"`，否则
- * `startForeground(..., FOREGROUND_SERVICE_TYPE_LOCATION)` 会抛异常。
+ * 宿主 `AndroidManifest.xml`：**每个 HostServiceN 必须声明**
+ * ```xml
+ * <service
+ *     android:name=".services.HostService1"
+ *     android:foregroundServiceType="location"
+ *     android:exported="false" />
+ * ```
+ * 否则 `startForeground(..., FOREGROUND_SERVICE_TYPE_LOCATION)` 抛异常。
  *
- * ## 通知小图标
+ * ## ★ B4 修复说明
  *
- * 用系统内置图标 `android.R.drawable.ic_menu_mylocation`——这样
- * 插件在 `compileOnly` 模式下不需要引入任何 drawable 资源。
- * 如果宿主希望换成品牌图标，可让宿主提供 `NotificationBuilder`
- * 注入接口（见后续步骤）。
+ * 插件自己的 `AndroidManifest.xml` **不应再声明**本 Service——
+ * ComboLite 模型下插件 Service 由宿主代理池承载，插件 manifest 里的
+ * `<service>` 声明不会被注册为真实组件（已从新 manifest 中移除）。
  */
-class TrackRecordingService : Service(), IPluginService {
+class TrackRecordingService : BasePluginService() {
 
     /**
-     * ComboLite 注入的真实宿主 Service。
+     * 真实宿主 Service（由 BasePluginService 注入）。
      *
-     * [com.combo.core.component.service.BasePluginService] 里同名属性是
-     * `protected` 且 `private set`——这里不继承它，所以单独维护一份。
+     * 所有系统能力（startForeground / getSystemService / packageManager …）
+     * 都必须通过它访问。未注入时各操作静默跳过——正常情况下 ProxyManager
+     * 一定会在调用 onStartCommand 之前完成注入。
      */
-    @Volatile
-    private var proxyService: Service? = null
-
-    /** 优先用真实宿主 Service；未注入时回退到自身（系统能力会失效）。 */
-    private val realService: Service
-        get() = proxyService ?: this
+    private val realService: Service?
+        get() = proxyService
 
     // =============================================================================================
-    // IPluginService
-    // =============================================================================================
-
-    /**
-     * 由 ProxyManager 在实例化时调用，注入真实宿主 Service。
-     */
-    override fun onAttach(proxyService: Service) {
-        this.proxyService = proxyService
-    }
-
-    // =============================================================================================
-    // Service 生命周期
+    // Service 生命周期（由宿主代理 Service 转发）
     // =============================================================================================
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -117,7 +104,7 @@ class TrackRecordingService : Service(), IPluginService {
                 // 通知栏"停止"按钮的兜底路径；主路径见 [TrackFgsReceiver]。
                 // stopSelf() 必须执行——它触发代理槽位归还。
                 runCatching { stopForegroundCompat() }
-                runCatching { realService.stopSelf() }
+                runCatching { realService?.stopSelf() }
             }
 
             else -> {
@@ -127,7 +114,7 @@ class TrackRecordingService : Service(), IPluginService {
                 }
             }
         }
-        return START_STICKY
+        return Service.START_STICKY
     }
 
     override fun onDestroy() {
@@ -140,7 +127,7 @@ class TrackRecordingService : Service(), IPluginService {
     // =============================================================================================
 
     private fun startForegroundCompat(title: String, text: String) {
-        val target = realService
+        val target = realService ?: return
         val notif = buildNotification(title, text)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -158,7 +145,7 @@ class TrackRecordingService : Service(), IPluginService {
 
     @Suppress("DEPRECATION")
     private fun stopForegroundCompat() {
-        val target = realService
+        val target = realService ?: return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             target.stopForeground(Service.STOP_FOREGROUND_REMOVE)
         } else {
@@ -167,7 +154,7 @@ class TrackRecordingService : Service(), IPluginService {
     }
 
     private fun updateNotification(title: String, text: String) {
-        val target = realService
+        val target = realService ?: return
         val nm = target.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
             ?: return
         runCatching { nm.notify(NOTIFICATION_ID, buildNotification(title, text)) }
@@ -175,6 +162,9 @@ class TrackRecordingService : Service(), IPluginService {
 
     private fun buildNotification(title: String, text: String): Notification {
         val target = realService
+            ?: throw IllegalStateException(
+                "proxyService 未注入——TrackRecordingService 必须由 ComboLite ProxyManager 实例化",
+            )
 
         // 点击通知 → 打开宿主 App
         val contentIntent: PendingIntent? = target.packageManager
@@ -215,7 +205,7 @@ class TrackRecordingService : Service(), IPluginService {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        val target = realService
+        val target = realService ?: return
         val nm = target.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
             ?: return
         if (nm.getNotificationChannel(CHANNEL_ID) != null) return
@@ -245,7 +235,7 @@ class TrackRecordingService : Service(), IPluginService {
         /**
          * 通知栏"停止"按钮发出的广播。
          *
-         * 由 [TrackFgsReceiver] 动态注册接收（注册时机见 `GeoPluginEntry`）。
+         * 由 [TrackFgsReceiver] 动态注册接收（注册时机见 `PluginEntryClass`）。
          * 广播**显式 setPackage(packageName)**，不会泄漏到其它应用。
          */
         const val ACTION_USER_STOP = "org.kori.plugin.geo.fgs.USER_STOP"

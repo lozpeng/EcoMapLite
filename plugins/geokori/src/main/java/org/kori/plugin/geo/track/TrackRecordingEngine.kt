@@ -1,11 +1,16 @@
 package org.kori.plugin.geo.track
 
+import android.Manifest
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.location.Location
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -14,15 +19,13 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import org.kori.plugin.geo.location.LocationTracker
-import java.io.File
-import android.content.Intent
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.withContext
+import org.kori.plugin.geo.location.LocationTracker
 import org.kori.plugin.geo.service.TrackFgsBridge
 import org.kori.plugin.geo.service.TrackRecordingService
-
+import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
+
 /**
  * 轨迹记录引擎（应用级单例）。
  *
@@ -30,49 +33,31 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  *  · **单例**：不受 Compose / Activity 生命周期影响，App 切后台记录继续
  *  · **共享**：地图和记录器共用**同一个** [LocationTracker]，保证位置一致
+ *  · **长生命周期 tracker**：★ tracker 从 init/首次获得权限起常驻，fix 常热——
+ *    蓝点即开即有，开始记录时立刻有数据（避免每次录制的 GPS 冷启动 10~30s）
  *  · **FGS 桥接**：通过 [TrackFgsBridge] 让宿主的前台服务保持进程存活
- *  · **符合 Combolite**：插件不带 Service，Service 由宿主提供
+ *  · **暂停/继续**：暂停期间不写入轨迹点、距离与计时冻结（见 [pause] / [resume]）
  *
  * ## 生命周期
  *
  * ```
- * Application.onCreate()
- *     └─ TrackRecordingEngine.init(applicationContext)
+ * Application.onCreate / 插件 onLoad
+ *     └─ init()                          → 存 context；有定位权限则启动共享 tracker
+ * 地图页面获得定位权限
+ *     └─ ensureLocationTracking(ctx)     → 幂等启动共享 tracker（无录制也有 fix）
  *
- * 用户点击"开始"
- *     └─ TrackRecordingEngine.start(context)
- *         ├─ 创建 LocationTracker / SegmentedTrackRecorder / SensorSampler
- *         ├─ 启动 tracker
- *         ├─ 订阅 fix → recorder.record()
- *         ├─ 订阅 recorder.liveTrack → state 更新
- *         └─ 启动 FGS（宿主 HostTrackFgs）
- *
- * 用户点击"停止"
- *     └─ TrackRecordingEngine.stop()
- *         ├─ 取消所有 job
- *         ├─ 关闭 recorder 会话
- *         ├─ 停止 tracker
- *         ├─ 清理缓存
- *         └─ 停止 FGS
- *
- * App 进程结束
- *     └─ 系统自动清理（无需手动 destroy）
+ * 用户点击"开始"   → start()    → 只创建 recorder + sampler + FGS（tracker 已热）
+ * 用户点击"暂停"   → pause()    → 停止写入，计时/距离冻结，FGS 显示"已暂停"
+ * 用户点击"继续"   → resume()   → 恢复写入（仍在同一会话/段内）
+ * 用户点击"结束"   → stop()     → 关闭会话、停止 FGS（★ tracker 保持运行）
  * ```
  *
- * ## 线程安全
+ * ## 暂停的语义（重要）
  *
- *  · 所有 public 方法都可以从任意线程调用
- *  · `start()` / `stop()` 用 [lifecycleLock] 保护，幂等
- *  · 内部状态用 `@Volatile` 或 `StateFlow` 保证可见性
- *
- * ## 媒体通知链
- *
- * ```
- * TrackMediaCaptureActivity / VideoCaptureActivity
- *     └─ TrackRecordingEngine.notifyMediaAdded(record)
- *         ├─ recorder.recordMedia(record)     ← 写 sidecar JSON
- *         └─ _state.liveMedia += record       ← UI 更新
- * ```
+ *  · 暂停**不关闭会话、不切断 GPS**——resume 时继续写入当前段，不产生新段
+ *  · 暂停期间 fix 仍转发给地图（[trackerFixes]），蓝点继续跟随，方便用户暂停时浏览地图
+ *  · [TrackRecordingState.elapsedMs] 与 distance 在暂停期间**冻结**
+ *  · 进程在暂停期间仍受 FGS 保护（避免系统杀进程导致会话丢失）
  */
 object TrackRecordingEngine {
 
@@ -97,6 +82,19 @@ object TrackRecordingEngine {
     private val lifecycleLock = Any()
 
     // =============================================================================================
+    // 暂停状态（在 lifecycleLock 内读写）
+    // =============================================================================================
+
+    /** 是否已暂停。 */
+    @Volatile private var paused: Boolean = false
+
+    /** 本次暂停开始的墙钟时间（毫秒）。未暂停时为 0。 */
+    @Volatile private var pauseStartMs: Long = 0L
+
+    /** 历史累计暂停时长（毫秒），用于从 elapsed 中扣除。 */
+    @Volatile private var pausedTotalMs: Long = 0L
+
+    // =============================================================================================
     // 对外状态
     // =============================================================================================
 
@@ -105,9 +103,12 @@ object TrackRecordingEngine {
     val state: StateFlow<TrackRecordingState> = _state.asStateFlow()
 
     /**
-     * 位置 fix 流（供地图订阅驱动相机）。
+     * 位置 fix 流（供地图订阅驱动相机/蓝点）。
      *
      * replay = 1：新订阅者会收到最近一次 fix，避免相机延迟跟到。
+     *
+     * 注意：暂停期间此流**仍然发射**（用户暂停时往往想继续看地图位置），
+     * 只是不再写入轨迹。
      */
     private val _trackerFixes = MutableSharedFlow<LocationTracker.Fix>(
         replay = 1,
@@ -125,11 +126,18 @@ object TrackRecordingEngine {
     // 内部组件
     // =============================================================================================
 
-    private var tracker: LocationTracker? = null
+    /**
+     * 共享位置追踪器。★ 长生命周期：init / ensureLocationTracking 时创建并启动，
+     * 录制开始/停止都不重建它——保证 fix 常热。
+     */
+    @Volatile private var tracker: LocationTracker? = null
+
+    /** 共享 tracker 的 fix 收集 job（常驻，录制与否都在跑）。 */
+    @Volatile private var trackerJob: Job? = null
+
     private var recorder: SegmentedTrackRecorder? = null
     private var sensorSampler: SensorSampler? = null
 
-    private var locationJob: Job? = null
     private var liveJob: Job? = null
     private var mediaJob: Job? = null
 
@@ -152,28 +160,101 @@ object TrackRecordingEngine {
     // =============================================================================================
 
     /**
-     * 应用启动时调用一次。幂等。
+     * 应用/插件启动时调用一次。幂等。
      *
-     * 通常在 `Application.onCreate()` 中：
+     * 通常在 `Application.onCreate()` 或 `PluginEntryClass.onLoad()` 中：
      *
      * ```kotlin
-     * override fun onCreate() {
-     *     super.onCreate()
-     *     TrackRecordingEngine.init(this)
-     * }
+     * TrackRecordingEngine.init(context)
      * ```
      *
-     * @param context 建议传 applicationContext
+     * 若此时已有定位权限，会直接启动共享 tracker；没有则等 [ensureLocationTracking]
+     * 在权限授予后调用（地图页面会在权限弹窗通过后主动调用）。
      */
     fun init(context: Context) {
         if (!initialized.compareAndSet(false, true)) return
-        appContext = context.applicationContext
+        val ctx = context.applicationContext
+        appContext = ctx
 
         // 订阅媒体事件 → 转发给 recorder
         mediaJob = scope.launch {
             _mediaEvents.collect { record ->
                 runCatching { recorder?.recordMedia(record) }
                 _state.update { it.copy(liveMedia = it.liveMedia + record) }
+            }
+        }
+
+        // 有权限就直接把共享 tracker 跑起来（fix 常热）
+        runCatching { ensureLocationTracking(ctx) }
+    }
+
+    // =============================================================================================
+    // 共享 tracker（长生命周期）
+    // =============================================================================================
+
+    /**
+     * 幂等启动共享 [LocationTracker]。
+     *
+     * 调用时机：
+     *  · `init()` 内部自动调用
+     *  · 地图页面获得定位权限后（`MapLibreMapView` 自定义管线 effect 会调用）
+     *
+     * 未授予定位权限时静默返回（不抛异常）。tracker 一旦启动持续运行，
+     * 录制开始/停止均不影响它。
+     */
+    fun ensureLocationTracking(context: Context) {
+        val ctx = context.applicationContext
+        synchronized(lifecycleLock) {
+            if (!hasLocationPermission(ctx)) return
+            val t = tracker
+            if (t == null) {
+                val created = LocationTracker(ctx)
+                tracker = created
+                created.start()
+                trackerJob = scope.launch { collectFixes(created) }
+            } else {
+                // start() 内部幂等（已启动则直接返回）
+                runCatching { t.start() }
+            }
+        }
+    }
+
+    private fun hasLocationPermission(ctx: Context): Boolean =
+        ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_FINE_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED ||
+                ContextCompat.checkSelfPermission(ctx, Manifest.permission.ACCESS_COARSE_LOCATION) ==
+                PackageManager.PERMISSION_GRANTED
+
+    /**
+     * 常驻 fix 收集：转发地图 + 驱动 recorder（录制中且未暂停时）。
+     *
+     * 单一收集点，避免多处 collect 竞争 lastRawLocation。
+     */
+    private suspend fun collectFixes(t: LocationTracker) {
+        t.fixes.collect { fix ->
+            lastKnownLocation = t.lastRawLocation
+            _trackerFixes.tryEmit(fix)
+
+            // ★ 暂停期间：位置仍转发给地图，但不写入轨迹、不计时
+            if (paused) return@collect
+
+            val rec = recorder ?: return@collect
+            val loc = t.lastRawLocation ?: return@collect
+            rec.record(loc, fix.profile)
+            val now = System.currentTimeMillis()
+            _state.update {
+                it.copy(
+                    recording = true,
+                    points = rec.totalRawPoints,
+                    distanceM = rec.totalDistanceM,
+                    segments = rec.totalSegments,
+                    elapsedMs = effectiveElapsedMs(rec, now),
+                )
+            }
+            // 1 Hz 节流更新 FGS 通知
+            if (now - lastFgsUpdateMs >= 1000L) {
+                lastFgsUpdateMs = now
+                updateFgsNotification(rec)
             }
         }
     }
@@ -186,6 +267,9 @@ object TrackRecordingEngine {
      * 开始记录。
      *
      * 幂等：若已在记录，直接返回。
+     *
+     * 只创建 recorder / sampler / FGS；共享 tracker 由 [ensureLocationTracking]
+     * 保证已热（本函数内也会再调一次，幂等）。
      *
      * @param context 建议传 applicationContext
      * @param config  分段配置（默认 [SegmentConfig.Default]）
@@ -200,8 +284,10 @@ object TrackRecordingEngine {
             if (_state.value.recording) return
             val ctx = context.applicationContext
 
-            // ---- 1. 创建 tracker / recorder / sampler ----
-            val t = LocationTracker(ctx)
+            // ---- 0. 确保共享 tracker 已运行（fix 常热，无需冷启动）----
+            runCatching { ensureLocationTracking(ctx) }
+
+            // ---- 1. 创建 recorder / sampler ----
             val r = SegmentedTrackRecorder(
                 tracksRoot = File(ctx.filesDir, TRACKS_DIR).apply { mkdirs() },
                 segmentConfig = config,
@@ -215,39 +301,10 @@ object TrackRecordingEngine {
             val sessionDir = r.startSession()
             currentSessionDir = sessionDir
 
-            tracker = t
             recorder = r
             sensorSampler = s
 
-            // ---- 3. 订阅 fix → 驱动 recorder + 转发地图 + 更新 FGS ----
-            locationJob = scope.launch {
-                t.fixes.collect { fix ->
-                    lastKnownLocation = t.lastRawLocation
-                    _trackerFixes.tryEmit(fix)
-
-                    val loc = t.lastRawLocation ?: return@collect
-                    r.record(loc, fix.profile)
-                    val now = System.currentTimeMillis()
-                    val elapsedMs = now - r.startTimeMs
-                    _state.update {
-                        it.copy(
-                            recording = true,
-                            points = r.totalRawPoints,
-                            distanceM = r.totalDistanceM,
-                            segments = r.totalSegments,
-                            elapsedMs = elapsedMs,
-                        )
-                    }
-                    if (now - lastFgsUpdateMs >= 1000L) {
-                        lastFgsUpdateMs = now
-                        updateFgsNotification(r)
-                    }
-                    // 更新 FGS 通知（每次 fix 一次）
-                    updateFgsNotification(r)
-                }
-            }
-
-            // ---- 4. 订阅实时轨迹 ----
+            // ---- 3. 订阅实时轨迹 ----
             liveJob = scope.launch {
                 r.liveTrack.collect { (raw, smooth) ->
                     _state.update {
@@ -256,11 +313,13 @@ object TrackRecordingEngine {
                 }
             }
 
-            // ---- 5. 启动传感器和 GPS ----
-            t.start()
-
-            // ---- 6. 状态更新 + 启动 FGS ----
-            _state.update { it.copy(recording = true) }
+            // ---- 4. 状态更新 + 启动 FGS ----
+            paused = false
+            pauseStartMs = 0L
+            pausedTotalMs = 0L
+            _state.update {
+                it.copy(recording = true, paused = false, elapsedMs = 0L)
+            }
             runCatching {
                 TrackFgsBridge.start(
                     ctx,
@@ -272,31 +331,96 @@ object TrackRecordingEngine {
     }
 
     /**
+     * 暂停记录。
+     *
+     * 幂等：仅记录中且未暂停时生效。
+     *
+     * 暂停期间：
+     *  · 不再写入轨迹点（[trackerFixes] 仍发射，地图照常跟随）
+     *  · 距离 / 计时冻结
+     *  · FGS 通知显示"已暂停"
+     */
+    fun pause() {
+        synchronized(lifecycleLock) {
+            if (!_state.value.recording || paused) return
+            paused = true
+            pauseStartMs = System.currentTimeMillis()
+            _state.update { it.copy(paused = true) }
+            runCatching {
+                TrackFgsBridge.update(
+                    appContext ?: return@synchronized,
+                    title = "Vela 轨迹记录",
+                    text = "已暂停",
+                )
+            }
+        }
+    }
+
+    /**
+     * 继续记录。
+     *
+     * 幂等：仅暂停中时生效。恢复写入当前段（不切新段）。
+     */
+    fun resume() {
+        synchronized(lifecycleLock) {
+            if (!_state.value.recording || !paused) return
+            paused = false
+            pausedTotalMs += System.currentTimeMillis() - pauseStartMs
+            pauseStartMs = 0L
+            _state.update { it.copy(paused = false) }
+            runCatching {
+                TrackFgsBridge.update(
+                    appContext ?: return@synchronized,
+                    title = "Vela 轨迹记录",
+                    text = "记录中...",
+                )
+            }
+        }
+    }
+
+    /** 暂停 / 继续切换。 */
+    fun togglePause() {
+        if (paused) resume() else pause()
+    }
+
+    /**
+     * 计算扣除暂停时长后的有效记录时长。
+     */
+    private fun effectiveElapsedMs(r: SegmentedTrackRecorder, nowMs: Long): Long {
+        val pausedNow = if (paused && pauseStartMs > 0L) nowMs - pauseStartMs else 0L
+        return (nowMs - r.startTimeMs - pausedTotalMs - pausedNow).coerceAtLeast(0L)
+    }
+
+    /**
      * 停止记录。
      *
      * 幂等：若未在记录，直接返回。
+     *
+     * ★ 共享 tracker 保持运行（fix 常热，地图蓝点不消失）——只有
+     * [destroyForTest] 才会停它。
      */
     fun stop() {
         synchronized(lifecycleLock) {
             if (!_state.value.recording) return
             val ctx = appContext
 
-            // ---- 1. 取消所有 job ----
-            locationJob?.cancel(); locationJob = null
+            // ---- 1. 取消实时轨迹订阅 ----
             liveJob?.cancel(); liveJob = null
 
-            // ---- 2. 关闭组件 ----
+            // ---- 2. 关闭 recorder / sampler（不动 tracker！）----
             sensorSampler?.stop(); sensorSampler = null
             recorder?.endSession(); recorder = null
-            tracker?.stop(); tracker?.destroy(); tracker = null
 
             // ---- 3. 清空状态 ----
             currentSessionDir = null
-            lastKnownLocation = null
             lastFgsUpdateMs = 0L
+            paused = false
+            pauseStartMs = 0L
+            pausedTotalMs = 0L
             _state.update {
                 it.copy(
                     recording = false,
+                    paused = false,
                     liveTrackPoints = emptyList(),
                     liveSmoothPoints = emptyList(),
                     liveMedia = emptyList(),
@@ -314,7 +438,9 @@ object TrackRecordingEngine {
     }
 
     /**
-     * 切换记录状态。
+     * 切换记录状态（开始 / 结束）。
+     *
+     * 注意：暂停状态不经过此函数——暂停用 [togglePause]。
      */
     fun toggle(context: Context) {
         if (_state.value.recording) stop() else start(context)
@@ -324,6 +450,10 @@ object TrackRecordingEngine {
     val isRecording: Boolean
         get() = _state.value.recording
 
+    /** 是否已暂停。 */
+    val isPaused: Boolean
+        get() = paused
+
     // =============================================================================================
     // 媒体
     // =============================================================================================
@@ -331,11 +461,8 @@ object TrackRecordingEngine {
     /**
      * 通知 Engine 有新媒体添加。
      *
-     * 由 [org.kori.plugin.geo.map.service.TrackMediaCaptureActivity] 和
-     * [org.kori.plugin.geo.map.service.VideoCaptureActivity] 在保存完成后调用。
-     *
-     * 调用链：
-     *  · [mediaJob] 里 collect → recorder.recordMedia() + state.liveMedia += record
+     * 由 [org.kori.plugin.geo.service.TrackMediaCaptureActivity] 和
+     * [org.kori.plugin.geo.service.VideoCaptureActivity] 在保存完成后调用。
      */
     fun notifyMediaAdded(record: TrackMediaRecord) {
         _mediaEvents.tryEmit(record)
@@ -380,9 +507,9 @@ object TrackRecordingEngine {
     // =============================================================================================
 
     /**
-     * 每次 fix 更新 FGS 通知。
+     * 1 Hz 频率更新 FGS 通知。
      *
-     * 1 Hz 频率，格式：
+     * 格式：
      * ```
      * 245 点 · 2.13 km
      * ```
@@ -416,6 +543,8 @@ object TrackRecordingEngine {
     internal fun destroyForTest() {
         synchronized(lifecycleLock) {
             stop()
+            trackerJob?.cancel(); trackerJob = null
+            tracker?.stop(); tracker?.destroy(); tracker = null
             mediaJob?.cancel(); mediaJob = null
             scope.cancel()
             initialized.set(false)
@@ -430,7 +559,7 @@ object TrackRecordingEngine {
     /**
      * 处理来自通知栏"停止"按钮的 Intent。
      *
-     * 宿主 Receiver 收到 [org.kori.plugin.geo.map.service.HostTrackFgs.ACTION_USER_STOP]
+     * 宿主 Receiver 收到 [org.kori.plugin.geo.service.TrackRecordingService.ACTION_USER_STOP]
      * 后调用此方法。引擎会：
      *  · 停止记录
      *  · 停止 FGS
@@ -452,7 +581,7 @@ object TrackRecordingEngine {
  *
  * ## 字段说明
  *
- *  · **记录状态**：[recording] / [points] / [distanceM] / [elapsedMs] / [segments]
+ *  · **记录状态**：[recording] / [paused] / [points] / [distanceM] / [elapsedMs] / [segments]
  *  · **实时轨迹**：[liveTrackPoints] / [liveSmoothPoints] / [liveMedia]
  *  · **会话列表**：[sessions] / [loadingSessions]
  */
@@ -464,13 +593,20 @@ data class TrackRecordingState(
     /** 是否正在记录。 */
     val recording: Boolean = false,
 
+    /**
+     * 是否已暂停。
+     *
+     * true 时距离/计时冻结，不再写入轨迹点。仅 [recording] = true 时有意义。
+     */
+    val paused: Boolean = false,
+
     /** 已保留的轨迹点数（原始过滤后）。 */
     val points: Int = 0,
 
-    /** 累计距离（米）。 */
+    /** 累计距离（米）。暂停期间不累计。 */
     val distanceM: Double = 0.0,
 
-    /** 记录时长（毫秒），从会话开始时算起。 */
+    /** 记录时长（毫秒），从会话开始时算起，**已扣除暂停时长**。 */
     val elapsedMs: Long = 0L,
 
     /** 已完成的分段数。 */
@@ -527,6 +663,9 @@ data class TrackRecordingState(
 
     /** 一段人类可读的摘要，用于通知栏。 */
     val summaryText: String
-        get() = if (recording) "$elapsedText · $points 点 · $distanceText"
-        else "未记录"
+        get() = when {
+            !recording -> "未记录"
+            paused -> "已暂停 · $points 点 · $distanceText"
+            else -> "$elapsedText · $points 点 · $distanceText"
+        }
 }

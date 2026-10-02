@@ -47,6 +47,18 @@ data class MapConfig(
      */
     val customLocationDropFollowOnPan: Boolean = true,
 
+    /**
+     * 自定义管线跟随相机时，是否把地图旋转到运动方向（heading-up）。
+     *
+     *  · false（默认）：**朝北但不强制**——初始朝北；用户手动旋转地图后保持
+     *    用户的视角，不会被纠正回北（每帧采纳相机当前 bearing，与 tilt 同理）。
+     *    只有定位蓝点移动、蓝点箭头指示运动方向
+     *  · true：导航风格——地图缓动转向行进方向，转弯时地图旋转
+     *
+     * 注意：无论哪种模式，蓝点的方向箭头都正常（由 forceLocationUpdate 的 bearing 驱动）。
+     */
+    val customLocationRotateToBearing: Boolean = false,
+
     // =============================================================================================
     // 卫星影像
     // =============================================================================================
@@ -126,6 +138,14 @@ data class MapConfig(
      * false（默认）：由调用方通过 `MapLibreMapView(trackRecording = ...)` 控制。
      */
     val autoStartTrackRecording: Boolean = false,
+
+    /**
+     * 记录面板距离地图底部的间距。
+     *
+     * ★ 宿主底部有导航栏 / 悬浮按钮时，把它抬高到导航栏之上，
+     * 否则面板会被宿主 UI 遮住（默认 12.dp 只适合无底部栏的页面）。
+     */
+    val trackPanelBottomPadding: Dp = 30.dp,
 ) {
     companion object {
         val Default = MapConfig()

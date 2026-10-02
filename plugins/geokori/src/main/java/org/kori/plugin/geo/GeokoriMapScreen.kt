@@ -1,6 +1,8 @@
 package org.kori.plugin.geo
 
 import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -16,17 +18,25 @@ import org.kori.plugin.geo.map.MapConfig
 import org.kori.plugin.geo.map.MapLibreMapView
 
 /**
- * 插件化框架使用指南主界面
+ * 插件化框架使用指南主界面。
+ *
+ * ## ★ B5 修复：不再强转 `view.context as Activity`
+ *
+ * ComboLite 下插件 Compose 内容挂在宿主容器里，`LocalView.context`
+ * 可能是 ContextThemeWrapper 或宿主 ApplicationContext，强转 Activity
+ * 会抛 ClassCastException。改用 [findActivity] 逐级解包并判空。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Preview
 @Composable
 fun GeokoriMapScreen() {
     val view = LocalView.current
-    val window = (view.context as Activity).window
+    val activity = view.context.findActivity()
+    val window = activity?.window
 
-    // 在进入组合时隐藏系统栏
-    DisposableEffect(Unit) {
+    // 在进入组合时隐藏系统栏（仅当确实拿到了 window）
+    DisposableEffect(window) {
+        if (window == null) return@DisposableEffect onDispose { }
         val controller = WindowCompat.getInsetsController(window, view)
         controller.hide(WindowInsetsCompat.Type.systemBars())
         controller.systemBarsBehavior =
@@ -51,4 +61,11 @@ fun GeokoriMapScreen() {
         //         .windowInsetsPadding(WindowInsets.safeDrawing)
         // ) { ... }
     }
+}
+
+/** 从任意 Context 向上查找最近的 Activity（解包 ContextThemeWrapper 等）。 */
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
 }

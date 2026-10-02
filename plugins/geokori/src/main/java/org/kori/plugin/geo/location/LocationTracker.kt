@@ -24,6 +24,8 @@ import org.kori.plugin.geo.track.SegmentConfig
 import org.kori.plugin.geo.track.SegmentedTrackRecorder
 import org.kori.plugin.geo.track.SensorSampler
 import java.io.File
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlin.time.Duration.Companion.milliseconds
 
 /**
@@ -394,6 +396,24 @@ class LocationTracker(private val context: Context) {
         kalman.configure(profile)
 
         val prevRealFix = lastAcceptedFix
+
+        // ★ 预测位置：prev + 速度×dt 沿最后方位角外推（alpha-beta 思路）。
+        // sanitizer 向预测点而非 prev 收敛——匀速运动时消除系统性滞后，
+        // 只在真实加速度上做平滑。
+        val predicted: LatLng? = if (prevRealFix != null && dt > 0.0) {
+            val brg = lastBearing
+            val spd = kalman.speed
+            if (brg != null && spd > 0.3) {
+                val dist = spd * dt
+                val rad = Math.toRadians(brg.toDouble())
+                LatLng(
+                    prevRealFix.latitude + dist * cos(rad) / GeoMath.METERS_PER_DEG_LAT,
+                    prevRealFix.longitude + dist * sin(rad) /
+                            GeoMath.metersPerDegLng(prevRealFix.latitude),
+                )
+            } else null
+        } else null
+
         val rawHere = LatLng(loc.latitude, loc.longitude)
         val here = sanitizer.sanitize(
             here = rawHere,
@@ -402,6 +422,7 @@ class LocationTracker(private val context: Context) {
             dtSeconds = dt,
             wasUpgrade = wasUpgrade,
             profile = profile,
+            predicted = predicted,
         )
 
         val moved = prevRealFix?.let {

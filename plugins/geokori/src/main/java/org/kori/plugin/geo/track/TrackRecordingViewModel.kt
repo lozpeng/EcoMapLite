@@ -5,14 +5,19 @@ import androidx.lifecycle.ViewModel
 import kotlinx.coroutines.flow.StateFlow
 
 /**
- * 轨迹记录 ViewModel（Koin 版）。
+ * 轨迹记录 ViewModel。
  *
- *  · 构造函数接收 `Context`，由 Koin 的 `androidContext()` 注入
- *  · Compose 里用 `koinViewModel()` 获取（替换 `hiltViewModel()`）
+ *  · 构造函数接收 `Context`，**调用方手动构造**（见 `TrackRecordingScreen`）
+ *  · 如果宿主/插件使用了 Koin，也可以在 `PluginEntryClass.pluginModule` 里注册：
+ *    ```kotlin
+ *    override val pluginModule: List<Module>
+ *        get() = listOf(module { viewModel { TrackRecordingViewModel(androidContext()) } })
+ *    ```
+ *    然后改回 `koinViewModel()` 获取。
  *
  * ## 职责
  *
- *  · 只是 [TrackRecordingEngine] 的薄转发层——暴露 state、转发启停调用
+ *  · 只是 [TrackRecordingEngine] 的薄转发层——暴露 state、转发启停/暂停调用
  *  · 不做业务逻辑——业务都在 Engine（应用级单例）
  */
 class TrackRecordingViewModel(
@@ -27,7 +32,11 @@ class TrackRecordingViewModel(
         TrackRecordingEngine.refreshSessions(context)
     }
 
+    /** 开始 / 结束记录。 */
     fun toggleRecording() = TrackRecordingEngine.toggle(context)
+
+    /** 暂停 / 继续记录（仅记录中有效）。 */
+    fun togglePause() = TrackRecordingEngine.togglePause()
 
     fun startRecording(config: SegmentConfig = SegmentConfig.Default) =
         TrackRecordingEngine.start(context, config)

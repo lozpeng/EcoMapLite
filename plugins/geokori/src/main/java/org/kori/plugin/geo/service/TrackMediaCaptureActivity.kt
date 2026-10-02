@@ -166,7 +166,31 @@ class TrackMediaCaptureActivity : BasePluginActivity() {
     }
 
     private fun denyAndFinish(msg: String) {
-        proxyActivity?.let { Toast.makeText(it, msg, Toast.LENGTH_SHORT).show() }
+        val host = proxyActivity ?: return finish0()
+        // ★ 区分两种情况：
+        //  1. 普通拒绝 → 只提示
+        //  2. 勾选了"不再询问"的系统静默拒绝 → 引导到系统设置页手动开启
+        //     （此时再调 launch() 也不会弹框，用户会误以为功能坏了）
+        val permanentlyDenied = !host.shouldShowRequestPermissionRationale(
+            when (captureKind) {
+                KIND_PHOTO -> Manifest.permission.CAMERA
+                KIND_AUDIO -> Manifest.permission.RECORD_AUDIO
+                else -> Manifest.permission.CAMERA
+            },
+        )
+        if (permanentlyDenied) {
+            Toast.makeText(host, "$msg（已选择不再询问，请在系统设置中开启）", Toast.LENGTH_LONG).show()
+            runCatching {
+                host.startActivity(
+                    android.content.Intent(
+                        android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        android.net.Uri.fromParts("package", host.packageName, null),
+                    ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }
+        } else {
+            Toast.makeText(host, msg, Toast.LENGTH_SHORT).show()
+        }
         finish0()
     }
 

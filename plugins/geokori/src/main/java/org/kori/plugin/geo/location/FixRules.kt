@@ -38,6 +38,10 @@ object FixRules {
     /**
      * 一个跳跃是否物理可能（outlier 判定的原始逻辑）。
      *
+     * ★ 精度优化：余量从 35m 收紧到 25m。原值太松，城市峡谷里一次
+     * 25~35m 的漂移会被当成"可能"直接放行，体现在蓝点上就是定位跳动。
+     * 25m 在 reject 缓冲（连续 2 次拒绝后接受）的保护下不会误杀真实移动。
+     *
      * @param movedMeters 本次移动的距离
      * @param lastSpeedMps 上次已知速度
      * @param dtSeconds 两次 fix 间隔
@@ -47,8 +51,8 @@ object FixRules {
         lastSpeedMps: Float,
         dtSeconds: Double,
     ): Boolean {
-        // 允许 12 m/s（~43 km/h）的加速度余量 + 35m 的 GPS 波动
-        val plausible = (lastSpeedMps + 12f) * dtSeconds + 35.0
+        // 允许 12 m/s（~43 km/h）的加速度余量 + 25m 的 GPS 波动
+        val plausible = (lastSpeedMps + 12f) * dtSeconds + 25.0
         return movedMeters <= plausible
     }
 
