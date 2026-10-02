@@ -1,22 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
-
+    <!-- 通用 -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- 定位 -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <!-- Android 10+ 需要显式声明，否则前台定位也不可用 -->
+    <!-- 若不需要后台持续定位，删掉下面这行 -->
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+    <!-- 前台服务（基础） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 
+    <!-- 前台服务（type → 权限一一对应） -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
 
     <application
         android:name=".HostApp"
@@ -64,34 +69,44 @@
 
         <service
             android:name=".HostService1"
-            android:foregroundServiceType="dataSync|mediaPlayback|shortService" />
+            android:exported="false"
+            android:foregroundServiceType="location|connectedDevice|dataSync|mediaPlayback|shortService" />
         <service
             android:name=".HostService2"
-            android:foregroundServiceType="dataSync|mediaPlayback|shortService" />
+            android:exported="false"
+            android:foregroundServiceType="location|connectedDevice|dataSync|mediaPlayback|shortService" />
         <service
             android:name=".HostService3"
-            android:foregroundServiceType="dataSync|mediaPlayback|shortService" />
+            android:exported="false"
+            android:foregroundServiceType="location|connectedDevice|dataSync|mediaPlayback|shortService" />
         <service
             android:name=".HostService4"
-            android:foregroundServiceType="dataSync|mediaPlayback|shortService" />
+            android:exported="false"
+            android:foregroundServiceType="location|connectedDevice|dataSync|mediaPlayback|shortService" />
         <service
             android:name=".HostService5"
-            android:foregroundServiceType="dataSync|mediaPlayback|shortService" />
+            android:exported="false"
+            android:foregroundServiceType="location|connectedDevice|dataSync|mediaPlayback|shortService" />
         <service
             android:name=".HostService6"
-            android:foregroundServiceType="dataSync|mediaPlayback|shortService" />
+            android:exported="false"
+            android:foregroundServiceType="location|connectedDevice|dataSync|mediaPlayback|shortService" />
         <service
             android:name=".HostService7"
-            android:foregroundServiceType="dataSync|mediaPlayback|shortService" />
+            android:exported="false"
+            android:foregroundServiceType="location|connectedDevice|dataSync|mediaPlayback|shortService" />
         <service
             android:name=".HostService8"
-            android:foregroundServiceType="dataSync|mediaPlayback|shortService" />
+            android:exported="false"
+            android:foregroundServiceType="location|connectedDevice|dataSync|mediaPlayback|shortService" />
         <service
             android:name=".HostService9"
-            android:foregroundServiceType="dataSync|mediaPlayback|shortService" />
+            android:exported="false"
+            android:foregroundServiceType="location|connectedDevice|dataSync|mediaPlayback|shortService" />
         <service
             android:name=".HostService10"
-            android:foregroundServiceType="dataSync|mediaPlayback|shortService" />
+            android:exported="false"
+            android:foregroundServiceType="location|connectedDevice|dataSync|mediaPlayback|shortService" />
 
         <activity
             android:name=".HostActivity"

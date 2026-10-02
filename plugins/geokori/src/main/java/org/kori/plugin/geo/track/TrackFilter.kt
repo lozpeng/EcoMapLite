@@ -1,21 +1,28 @@
 package org.kori.plugin.geo.track
 
 import org.kori.plugin.geo.math.GeoMath
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 轨迹点入口过滤。
  *
- * 目标：**拒绝 GPS 漂移点**，同时不误杀真实移动。
+ * ## 目标
  *
- * 过滤规则（按顺序）：
- *  1. **精度门控**：accuracy > [maxAccuracyM] 的点直接拒绝
+ * **拒绝 GPS 漂移点**，同时不误杀真实移动。
+ *
+ * ## 六条规则（按顺序）
+ *
+ *  1. **精度门控**：`accuracyM > maxAccuracyM` 直接拒绝
  *  2. **首点必收**：第一个保留点无条件写入
- *  3. **物理可能性**：与上一点的距离超过物理上限 → 拒绝
+ *  3. **物理可能性**：与上一点距离超过物理上限 → 拒绝
  *  4. **静止漂移抑制**：速度极低但移动明显 → 疑似漂移，连续多次同一区域才接受
- *  5. **运动开始锚点**：从上一次静止转到现在移动，即使距离小也保留（标记运动起点）
- *  6. **自适应最小距离**：距离 < max(1m, 0.5 * speed * dt, accuracy * 0.3) → 拒绝
+ *  5. **运动开始锚点**：从静止转移动的转变点，即使距离小也保留
+ *  6. **自适应最小距离**：距离 < max(1m, 0.5·v·dt, accuracy·0.3) → 拒绝
  *
- * 状态化：[driftStreak] 记录连续漂移次数，让真实的大距离移动在 3 次后通过。
+ * ## 状态化
+ *
+ *  · [driftStreak]：连续漂移次数，让真实的大距离移动在 3 次后通过
+ *  · [rejectedCount]：累计拒绝数（供 UI 显示"拒绝 N 点"）
  */
 class TrackFilter(
     /** 精度差于此值的点直接拒绝。40m 覆盖城市峡谷；乡村 GPS 通常 < 10m。 */
@@ -30,11 +37,26 @@ class TrackFilter(
     private val driftZoneM: Double = 15.0,
 ) {
 
-    private var driftStreak = 0
-    private var driftLat = 0.0
-    private var driftLng = 0.0
+    // =============================================================================================
+    // 状态
+    // =============================================================================================
+
+    private var driftStreak: Int = 0
+    private var driftLat: Double = 0.0
+    private var driftLng: Double = 0.0
 
     private var lastKeptSpeedMps: Float = 0f
+
+    /** 累计拒绝数。UI 可显示"拒绝 N 点"。 */
+    private val _rejectedCount = AtomicInteger(0)
+
+    /** 累计拒绝数。 */
+    val rejectedCount: Int
+        get() = _rejectedCount.get()
+
+    // =============================================================================================
+    // 判定
+    // =============================================================================================
 
     /**
      * 判断一个候选点是否应写入轨迹。
@@ -44,6 +66,12 @@ class TrackFilter(
      * @return true = 写入，false = 拒绝
      */
     fun shouldKeep(candidate: TrackPoint, lastKept: TrackPoint?): Boolean {
+        val keep = evaluate(candidate, lastKept)
+        if (!keep) _rejectedCount.incrementAndGet()
+        return keep
+    }
+
+    private fun evaluate(candidate: TrackPoint, lastKept: TrackPoint?): Boolean {
         // 1. 精度门控
         val acc = candidate.accuracyM
         if (acc != null && acc > maxAccuracyM) {
@@ -126,5 +154,6 @@ class TrackFilter(
         driftLat = 0.0
         driftLng = 0.0
         lastKeptSpeedMps = 0f
+        _rejectedCount.set(0)
     }
 }

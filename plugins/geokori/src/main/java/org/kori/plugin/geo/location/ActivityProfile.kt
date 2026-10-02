@@ -19,8 +19,8 @@ enum class ActivityProfile(
 ) {
     STILL(
         kMin = 0.10f,
-        fullFollowSpeed = 1.0f,
-        deadReckonSpeed = Float.MAX_VALUE, // 静止不推算
+        fullFollowSpeed = 0.5f,     // ★ 从 1.0f 调小——0.5 m/s 内几乎不跟随
+        deadReckonSpeed = Float.MAX_VALUE,
         deadReckonMaxS = 0.0,
         speedDecayTau = 2.0,
     ),

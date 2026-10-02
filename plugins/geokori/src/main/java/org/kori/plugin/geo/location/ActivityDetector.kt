@@ -91,8 +91,7 @@ class ActivityDetector(context: Context) {
             else -> bySpeed
         }
         if (want == current) {
-            candidate = want
-            candidateSinceMs = 0L
+            candidateSinceMs = 0L    // 重置迟滞计时即可
             return
         }
         val now = System.currentTimeMillis()

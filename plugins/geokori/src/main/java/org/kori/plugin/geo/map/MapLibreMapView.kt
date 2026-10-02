@@ -17,14 +17,17 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
@@ -64,10 +67,17 @@ import java.io.File
 import kotlin.math.abs
 import kotlin.math.exp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.SharedFlow
+import org.kori.plugin.geo.track.LiveTrackLayer
+import org.kori.plugin.geo.track.TrackMapCallbacks
+import org.kori.plugin.geo.track.TrackMediaRecord
+import org.kori.plugin.geo.track.TrackPoint
+import org.kori.plugin.geo.track.TrackRecordingEngine
+import org.kori.plugin.geo.track.TrackRecordingPanel
+import org.kori.plugin.geo.track.TrackServiceState
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
-
 // =============================================================================================
 // 常量
 // =============================================================================================
@@ -84,29 +94,18 @@ private const val OVERLAY_CONTOUR = "contour"
 // 相机缓动参数
 // =============================================================================================
 
-/**
- * 相机跟随的时间常数（秒）。分开设置以免地图"甩头"：
- *  · 位置：快（0.25s）—— 蓝点保持在屏幕中心
- *  · 方位角：慢（0.55s）—— 转弯时地图平滑旋转而非瞬间转
- *  · 缩放：中（0.5s）—— 速度变化时缓慢呼吸
- */
 private object CameraSmoothing {
     const val TAU_POS_S = 0.25f
     const val TAU_BRG_S = 0.55f
     const val TAU_ZOOM_S = 0.50f
 
-    /** 判定"已收敛"的阈值，收敛后停止向相机写入，省 JNI 调用。 */
     const val CONVERGED_DEG = 1e-6
     const val CONVERGED_BRG = 0.05
     const val CONVERGED_ZOOM = 0.001
 
-    /** 单帧 dt 上限（防 app 挂起后一帧跳太大）。 */
     const val MAX_DT_S = 0.1f
 
-    // ★ 空闲降频参数
-    /** 空闲多久后开始降频（毫秒）。 */
     val IDLE_GRACE: Duration = 1.seconds
-    /** 降频后的 tick 间隔（毫秒）。100ms = 10Hz。 */
     val IDLE_TICK: Duration = 100.milliseconds
 }
 
@@ -114,6 +113,31 @@ private object CameraSmoothing {
 // 主 Composable
 // =============================================================================================
 
+/**
+ * MapLibre 地图 Compose 封装。
+ *
+ * ## 位置源（三种，优先级从高到低）
+ *
+ *  1. [externalLocationFixes]：外部的 `SharedFlow<Fix>`（Engine 单例模式）
+ *  2. [externalLocationTracker]：外部持有的 `LocationTracker` 实例
+ *  3. 内部创建：默认
+ *
+ * ## 实时轨迹
+ *
+ * 通过 [liveTrackPoints] / [liveSmoothPoints] / [liveTrackMedia] 三个参数绘制，
+ * 使用 [LiveTrackLayer] 在样式加载时自动注册图层。
+ *
+ * ## 记录面板（可选）
+ *
+ * 传入 [trackPanelCallbacks] 后，地图会在 [TrackRecordingEngine] 的 `recording=true`
+ * 时**自动叠加** [TrackRecordingPanel]，记录结束时自动隐藏。
+ *
+ * 不传 `trackPanelCallbacks`（默认 null）→ 纯地图，零开销。
+ *
+ * ## Bug 修复
+ *
+ *  · B6：相机 ticker 里实时读 `map.cameraPosition.tilt`
+ */
 @Composable
 fun MapLibreMapView(
     modifier: Modifier = Modifier,
@@ -127,14 +151,21 @@ fun MapLibreMapView(
     onTrackSaved: ((File) -> Unit)? = null,
     onTrackProgress: ((kept: Int, rejected: Int) -> Unit)? = null,
     externalLocationTracker: LocationTracker? = null,
+    externalLocationFixes: SharedFlow<LocationTracker.Fix>? = null,
+    liveTrackPoints: List<TrackPoint> = emptyList(),
+    liveSmoothPoints: List<TrackPoint> = emptyList(),
+    liveTrackMedia: List<TrackMediaRecord> = emptyList(),
+
+    // ★ 新增：记录面板回调。非 null 时启用内嵌记录面板。
+    trackPanelCallbacks: TrackMapCallbacks? = null,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
 
-    // ---------------------------------------------------------------------
+    // =============================================================================================
     // 内部状态
-    // ---------------------------------------------------------------------
+    // =============================================================================================
     var locationEnabled by remember { mutableStateOf(config.showUserLocation) }
     var selectedBaseMap by remember {
         mutableStateOf(
@@ -153,9 +184,9 @@ fun MapLibreMapView(
     val satelliteEnabled = selectedBaseMap == BASE_MAP_SATELLITE
     val hillshadeEnabled = selectedBaseMap == BASE_MAP_TERRAIN
 
-    // ---------------------------------------------------------------------
+    // =============================================================================================
     // config 同步
-    // ---------------------------------------------------------------------
+    // =============================================================================================
     LaunchedEffect(config.showUserLocation) {
         if (config.showUserLocation != locationEnabled) locationEnabled = config.showUserLocation
     }
@@ -171,9 +202,9 @@ fun MapLibreMapView(
         if (config.contourOn != contourEnabled) contourEnabled = config.contourOn
     }
 
-    // ---------------------------------------------------------------------
+    // =============================================================================================
     // 位置权限
-    // ---------------------------------------------------------------------
+    // =============================================================================================
     var locationPermissionGranted by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
@@ -195,9 +226,9 @@ fun MapLibreMapView(
         }
     }
 
-    // ---------------------------------------------------------------------
+    // =============================================================================================
     // MapView 实例
-    // ---------------------------------------------------------------------
+    // =============================================================================================
     val mapView = remember {
         MapLibre.getInstance(context)
         MapView(context).apply { onCreate(null) }
@@ -206,56 +237,42 @@ fun MapLibreMapView(
     var mapRef by remember { mutableStateOf<MapLibreMap?>(null) }
     var styleRef by remember { mutableStateOf<Style?>(null) }
 
-    // ---------------------------------------------------------------------
-    // 自定义管线
-    // ---------------------------------------------------------------------
-    val locationTracker = remember(config.useCustomLocationPipeline, externalLocationTracker) {
-        if (!config.useCustomLocationPipeline) null
-        else externalLocationTracker ?: LocationTracker(context)
+    // =============================================================================================
+    // 自定义管线：tracker 实例选择
+    // =============================================================================================
+    val locationTracker = remember(
+        config.useCustomLocationPipeline,
+        externalLocationTracker,
+        externalLocationFixes,
+    ) {
+        if (!config.useCustomLocationPipeline) return@remember null
+        if (externalLocationTracker != null) return@remember externalLocationTracker
+        if (externalLocationFixes != null) return@remember null
+        LocationTracker(context)
     }
 
     var customFollow by remember { mutableStateOf(config.showUserLocation) }
     var customCollectJob by remember { mutableStateOf<Job?>(null) }
-    var lastFix by remember { mutableStateOf<LocationTracker.Fix?>(null) }
+    val lastFixHolder = remember { arrayOfNulls<LocationTracker.Fix>(1) }
 
     val trackDir = remember {
         File(context.filesDir, config.trackStorageDirName).apply { mkdirs() }
     }
 
-    // =====================================================================
+    // =============================================================================================
     // 相机缓动状态
-    // ---------------------------------------------------------------------
-    // 目标值：由 fix 写入，ticker 读它做缓动
-    // 用普通数组而非 mutableStateOf，避免每帧触发重组
-    // 单线程访问（collect 和 ticker 都在主线程），无需 @Volatile
-    // =====================================================================
-    val camTarget = remember {
-        doubleArrayOf(
-            /* lat     */ 0.0,
-            /* lng     */ 0.0,
-            /* bearing */ 0.0,
-            /* zoom    */ 0.0,
-            /* valid   */ 0.0,  // 0 = 未收到目标
-        )
-    }
-    // 当前缓动值
+    // =============================================================================================
+    val camTarget = remember { doubleArrayOf(0.0, 0.0, 0.0, 0.0, 0.0) }
     val camCurrent = remember { doubleArrayOf(0.0, 0.0, 0.0, 0.0, 0.0) }
-    // 上次写入相机的值（收敛判定用）
-    val camLastWrite = remember { doubleArrayOf(Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN) }
-    // 是否需要从当前相机重新 seed
+    val camLastWrite = remember {
+        doubleArrayOf(Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN)
+    }
     val camNeedsSeed = remember { booleanArrayOf(true) }
+    val camHasTarget = remember { booleanArrayOf(false) }
 
-    // =====================================================================
+    // =============================================================================================
     // 相机缓动 ticker
-    // ---------------------------------------------------------------------
-    // 逐帧运行，把 camCurrent 缓动到 camTarget。
-    // 只在 customFollow = true 时驱动相机。
-    //
-    // ## 空闲降频
-    // 无跟随 / 无 fix 时，累积空闲时间；超过 1 秒后从 60fps 降到 10Hz，
-    // 省电。任何"有事可做"的帧（新 fix 到达、用户点了重新居中）
-    // 立即恢复全帧率。
-    // =====================================================================
+    // =============================================================================================
     LaunchedEffect(
         config.useCustomLocationPipeline,
         locationEnabled,
@@ -272,8 +289,6 @@ fun MapLibreMapView(
 
         while (true) {
             val nowNanos = withFrameNanos { it }
-
-            // 帧回调里 dt 计算：lastNanos 为 0 说明是 ticker 刚启动或从 delay 恢复
             if (lastNanos == 0L) {
                 lastNanos = nowNanos
                 continue
@@ -283,26 +298,18 @@ fun MapLibreMapView(
             lastNanos = nowNanos
 
             val nowMs = nowNanos / 1_000_000L
-
-            // ---- 是否有事可做 ----
-            val hasWork = customFollow && camTarget[4] != 0.0
+            val hasWork = customFollow && camHasTarget[0]
 
             if (!hasWork) {
-                // 空闲：记录起始时间；超过 1 秒后降到 10Hz
                 if (idleSinceMs == 0L) idleSinceMs = nowMs
-                if (nowMs - idleSinceMs > CameraSmoothing.IDLE_GRACE.inWholeMilliseconds)  {
+                if (nowMs - idleSinceMs > CameraSmoothing.IDLE_GRACE.inWholeMilliseconds) {
                     delay(CameraSmoothing.IDLE_TICK)
-                    // 重置 dt 基准，避免 delay 后第一帧算出巨大的 dt
                     lastNanos = 0L
                 }
                 continue
             }
             idleSinceMs = 0L
 
-            // 未收到 fix 时不驱动
-            if (camTarget[4] == 0.0) continue
-
-            // 首次（或用户刚点重新居中）时，从当前相机位置 seed
             if (camNeedsSeed[0]) {
                 val cp = map.cameraPosition
                 camCurrent[0] = cp.target?.latitude ?: camTarget[0]
@@ -314,7 +321,6 @@ fun MapLibreMapView(
                 camNeedsSeed[0] = false
             }
 
-            // 指数缓动（每轴独立 tau）
             val kPos = 1.0 - exp(-dt / CameraSmoothing.TAU_POS_S)
             val kBrg = 1.0 - exp(-dt / CameraSmoothing.TAU_BRG_S)
             val kZoom = 1.0 - exp(-dt / CameraSmoothing.TAU_ZOOM_S)
@@ -322,23 +328,26 @@ fun MapLibreMapView(
             camCurrent[0] += (camTarget[0] - camCurrent[0]) * kPos
             camCurrent[1] += (camTarget[1] - camCurrent[1]) * kPos
 
-            // 方位角走最短路
             val dB = ((camTarget[2] - camCurrent[2] + 540.0) % 360.0) - 180.0
             camCurrent[2] = (camCurrent[2] + dB * kBrg + 360.0) % 360.0
 
             camCurrent[3] += (config.customLocationTrackingZoom - camCurrent[3]) * kZoom
 
-            // 收敛判定
+            // B6 修复：实时读取用户的倾斜
+            camCurrent[4] = map.cameraPosition.tilt
+
             val dLat = abs(camCurrent[0] - camLastWrite[0])
             val dLng = abs(camCurrent[1] - camLastWrite[1])
             val dB2 = abs(camCurrent[2] - camLastWrite[2])
             val dZ = abs(camCurrent[3] - camLastWrite[3])
+            val dT = abs(camCurrent[4] - camLastWrite[4])
 
             val converged = dLat.isNaN() ||
                     dLat > CameraSmoothing.CONVERGED_DEG ||
                     dLng > CameraSmoothing.CONVERGED_DEG ||
                     dB2 > CameraSmoothing.CONVERGED_BRG ||
-                    dZ > CameraSmoothing.CONVERGED_ZOOM
+                    dZ > CameraSmoothing.CONVERGED_ZOOM ||
+                    dT > CameraSmoothing.CONVERGED_BRG
 
             if (converged) {
                 runCatching {
@@ -357,9 +366,10 @@ fun MapLibreMapView(
             }
         }
     }
-    // ---------------------------------------------------------------------
-    // 生命周期转发
-    // ---------------------------------------------------------------------
+
+    // =============================================================================================
+    // 生命周期
+    // =============================================================================================
     DisposableEffect(lifecycleOwner, mapView) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
@@ -377,8 +387,11 @@ fun MapLibreMapView(
             lifecycleOwner.lifecycle.removeObserver(observer)
             customCollectJob?.cancel()
             customCollectJob = null
-            if (externalLocationTracker == null) {
+
+            val isInternal = externalLocationTracker == null && externalLocationFixes == null
+            if (isInternal) {
                 runCatching { locationTracker?.stop() }
+                runCatching { locationTracker?.destroy() }
             }
             runCatching { mapRef?.let { safeDeactivateLocation(it) } }
             mapView.onStop()
@@ -387,16 +400,17 @@ fun MapLibreMapView(
         }
     }
 
-    // ---------------------------------------------------------------------
+    // =============================================================================================
     // 地图初始化
-    // ---------------------------------------------------------------------
+    // =============================================================================================
     LaunchedEffect(mapView) {
         mapView.getMapAsync { map ->
             mapRef = map
 
-            // 用户手势 → 退出跟随
             map.addOnCameraMoveStartedListener { reason ->
-                if (reason != MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) return@addOnCameraMoveStartedListener
+                if (reason != MapLibreMap.OnCameraMoveStartedListener.REASON_API_GESTURE) {
+                    return@addOnCameraMoveStartedListener
+                }
                 if (!config.useCustomLocationPipeline) {
                     runCatching {
                         val lc = map.locationComponent
@@ -442,14 +456,17 @@ fun MapLibreMapView(
 
                 availableLayers = collectSwitchableLayers(style)
 
+                // 实时轨迹图层
+                LiveTrackLayer.ensureLayers(style)
+
                 MapRuntime.attach(style, map)
             }
         }
     }
 
-    // ---------------------------------------------------------------------
-    // 图层开关变化 → 重新应用
-    // ---------------------------------------------------------------------
+    // =============================================================================================
+    // 图层开关变化
+    // =============================================================================================
     LaunchedEffect(
         satelliteEnabled, hillshadeEnabled, contourEnabled,
         config.satelliteTiles, config.satelliteFallbackOn, config.satelliteFallbackTiles,
@@ -475,9 +492,26 @@ fun MapLibreMapView(
         }
     }
 
-    // ---------------------------------------------------------------------
+    // =============================================================================================
+    // 实时轨迹绘制
+    // =============================================================================================
+    LaunchedEffect(styleRef, liveTrackPoints, liveSmoothPoints) {
+        val style = styleRef ?: return@LaunchedEffect
+        if (liveTrackPoints.isEmpty() && liveSmoothPoints.isEmpty()) {
+            LiveTrackLayer.clearTrack(style)
+        } else {
+            LiveTrackLayer.updateTrack(style, liveTrackPoints, liveSmoothPoints)
+        }
+    }
+
+    LaunchedEffect(styleRef, liveTrackMedia) {
+        val style = styleRef ?: return@LaunchedEffect
+        LiveTrackLayer.updateMedia(style, liveTrackMedia)
+    }
+
+    // =============================================================================================
     // 位置组件 — MapLibre 默认管线
-    // ---------------------------------------------------------------------
+    // =============================================================================================
     LaunchedEffect(
         config.useCustomLocationPipeline,
         locationEnabled,
@@ -512,15 +546,16 @@ fun MapLibreMapView(
         }
     }
 
-    // ---------------------------------------------------------------------
+    // =============================================================================================
     // 位置组件 — 自定义管线
-    // ---------------------------------------------------------------------
+    // =============================================================================================
     LaunchedEffect(
         config.useCustomLocationPipeline,
         locationEnabled,
         locationPermissionGranted,
         styleRef,
         mapRef,
+        externalLocationFixes,
     ) {
         if (!config.useCustomLocationPipeline) return@LaunchedEffect
 
@@ -528,9 +563,8 @@ fun MapLibreMapView(
             customCollectJob?.cancel()
             customCollectJob = null
             customFollow = false
-            // 下次开启时重新 seed 相机
             camNeedsSeed[0] = true
-            camTarget[4] = 0.0
+            camHasTarget[0] = false
             return@LaunchedEffect
         }
 
@@ -544,19 +578,33 @@ fun MapLibreMapView(
             return@LaunchedEffect
         }
 
-        val tracker = locationTracker ?: return@LaunchedEffect
-
-        // 开启跟随（若已在跟随之保持）
         customFollow = true
-        camNeedsSeed[0] = true  // 强制从当前相机 seed
+        camNeedsSeed[0] = true
 
         customCollectJob?.cancel()
+
+        if (externalLocationFixes != null) {
+            customCollectJob = scope.launch {
+                externalLocationFixes.collect { fix ->
+                    lastFixHolder[0] = fix
+                    onLocationFix?.invoke(fix)
+
+                    camTarget[0] = fix.lat
+                    camTarget[1] = fix.lng
+                    fix.bearingDeg?.let { camTarget[2] = it.toDouble() }
+                    camTarget[3] = config.customLocationTrackingZoom
+                    camHasTarget[0] = true
+                }
+            }
+            return@LaunchedEffect
+        }
+
+        val tracker = locationTracker ?: return@LaunchedEffect
         customCollectJob = scope.launch {
-            tracker.locationFlow().collect { fix ->
-                lastFix = fix
+            tracker.fixes.collect { fix ->
+                lastFixHolder[0] = fix
                 onLocationFix?.invoke(fix)
 
-                // 轨迹进度
                 if (tracker.isRecording) {
                     onTrackProgress?.invoke(
                         tracker.recordedPoints(),
@@ -564,20 +612,18 @@ fun MapLibreMapView(
                     )
                 }
 
-                // ★ 只写目标，不直接操作相机
-                //   ticker 下一帧会缓动过去
                 camTarget[0] = fix.lat
                 camTarget[1] = fix.lng
                 fix.bearingDeg?.let { camTarget[2] = it.toDouble() }
                 camTarget[3] = config.customLocationTrackingZoom
-                camTarget[4] = 1.0  // valid
+                camHasTarget[0] = true
             }
         }
     }
 
-    // ---------------------------------------------------------------------
-    // 轨迹记录
-    // ---------------------------------------------------------------------
+    // =============================================================================================
+    // 轨迹记录（ViewModel 内嵌模式）
+    // =============================================================================================
     LaunchedEffect(config.useCustomLocationPipeline, trackRecording, locationEnabled) {
         if (!config.useCustomLocationPipeline) return@LaunchedEffect
         val tracker = locationTracker ?: return@LaunchedEffect
@@ -594,62 +640,46 @@ fun MapLibreMapView(
         }
     }
 
-    LaunchedEffect(config.autoStartTrackRecording, config.useCustomLocationPipeline, locationEnabled) {
-        if (!config.autoStartTrackRecording) return@LaunchedEffect
-        if (!config.useCustomLocationPipeline) return@LaunchedEffect
-        if (!locationEnabled || !locationPermissionGranted) return@LaunchedEffect
-        val tracker = locationTracker ?: return@LaunchedEffect
-        if (!tracker.isRecording) {
-            tracker.startRecording(trackDir)
-        }
-    }
-
-    // ---------------------------------------------------------------------
+    // =============================================================================================
     // UI
-    // ---------------------------------------------------------------------
+    // =============================================================================================
     Box(modifier) {
         AndroidView(
             factory = { mapView },
             modifier = Modifier.matchParentSize(),
         )
 
-        // ---------- 定位按钮 ----------
+        // 定位按钮
         if (config.showLocationButton) {
             Box(modifier = Modifier.matchParentSize()) {
                 FloatingActionButton(
                     onClick = {
                         if (config.useCustomLocationPipeline) {
-                            // === 自定义管线 ===
                             when {
                                 !locationEnabled -> {
-                                    // 关 → 开
                                     locationEnabled = true
                                     onUserLocationChange?.invoke(true)
                                     customFollow = true
                                     camNeedsSeed[0] = true
                                 }
                                 customFollow -> {
-                                    // 跟随中 → 关闭
                                     locationEnabled = false
                                     onUserLocationChange?.invoke(false)
                                     customFollow = false
                                 }
                                 else -> {
-                                    // 未跟随 → 重新居中
                                     customFollow = true
-                                    camNeedsSeed[0] = true  // 从当前位置重新缓动
-                                    // 若有 fix，立即把它设为目标（避免 ticker 等到下一帧）
-                                    lastFix?.let { fix ->
+                                    camNeedsSeed[0] = true
+                                    lastFixHolder[0]?.let { fix ->
                                         camTarget[0] = fix.lat
                                         camTarget[1] = fix.lng
                                         fix.bearingDeg?.let { camTarget[2] = it.toDouble() }
                                         camTarget[3] = config.customLocationTrackingZoom
-                                        camTarget[4] = 1.0
+                                        camHasTarget[0] = true
                                     }
                                 }
                             }
                         } else {
-                            // === 默认管线 ===
                             handleDefaultLocationButton(
                                 map = mapRef,
                                 locationEnabled = locationEnabled,
@@ -684,7 +714,7 @@ fun MapLibreMapView(
             }
         }
 
-        // ---------- 图层控制 ----------
+        // 图层控制
         if (config.showLayerButton) {
             val baseMapOptions = remember {
                 listOf(
@@ -757,11 +787,60 @@ fun MapLibreMapView(
                 },
             )
         }
+
+        // ★ 记录面板（可选）——仅 callbacks 非 null 时启用
+        if (trackPanelCallbacks != null) {
+            RecordingPanelOverlay(
+                callbacks = trackPanelCallbacks,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(12.dp),
+            )
+        }
     }
 }
 
 // =============================================================================================
-// 默认管线的定位按钮
+// ★ 记录面板覆盖层（内部 Composable）
+// =============================================================================================
+
+/**
+ * 记录面板覆盖层。
+ *
+ * 订阅 [TrackRecordingEngine.state]，仅在 `recording = true` 时渲染
+ * [TrackRecordingPanel]。停止记录后自动消失。
+ *
+ * ## 为什么是独立 Composable？
+ *
+ *  · `collectAsState()` 需要在稳定的 Composable 里调用
+ *  · 只有 [MapLibreMapView] 收到 `trackPanelCallbacks != null` 时才创建此 Composable
+ *  · `callbacks == null` 时不订阅 Engine，零开销
+ */
+@Composable
+private fun RecordingPanelOverlay(
+    callbacks: TrackMapCallbacks,
+    modifier: Modifier = Modifier,
+) {
+    val state by TrackRecordingEngine.state.collectAsState()
+
+    // 未记录 → 不渲染
+    if (!state.recording) return
+
+    TrackRecordingPanel(
+        state = TrackServiceState(
+            recording = state.recording,
+            points = state.points,
+            distanceM = state.distanceM,
+            elapsedMs = state.elapsedMs,
+            segments = state.segments,
+        ),
+        callbacks = callbacks,
+        modifier = modifier,
+    )
+}
+
+// =============================================================================================
+// 辅助函数
 // =============================================================================================
 
 @SuppressLint("MissingPermission")
@@ -801,10 +880,6 @@ private fun handleDefaultLocationButton(
         }
     }
 }
-
-// =============================================================================================
-// 图层检索 / 应用 / 样式注入
-// =============================================================================================
 
 private fun collectSwitchableLayers(style: Style): List<LayerEntry> {
     return style.layers.mapNotNull { layer ->
@@ -851,7 +926,7 @@ private fun buildStyleWithDemInjection(
                     .bufferedReader().use { it.readText() }
             }
             styleUri.startsWith("file://") -> {
-                java.io.File(styleUri.removePrefix("file://")).readText()
+                File(styleUri.removePrefix("file://")).readText()
             }
             styleUri.startsWith("http://") || styleUri.startsWith("https://") -> {
                 java.net.URL(styleUri).openStream()

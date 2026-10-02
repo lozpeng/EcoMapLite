@@ -73,8 +73,7 @@ xOrmLite = "1.0.2"
 
 #combolite aar2apk
 aarToApkPlugin = "1.1.1"
-
-
+cameraVideo = "1.6.2"
 
 [libraries]
 desugar_jdk_libs = { module = "com.android.tools:desugar_jdk_libs", version.ref = "desugar_jdk_libs" }
@@ -244,7 +243,8 @@ xormAnnot = { group = "com.github.xuexiangjys.XOrmlite", name = "xormlite-compil
 # map libre
 maplibre-vulkan = { group = "org.maplibre.gl", name = "android-sdk", version.ref = "maplibre" }
 maplibre-opengl = { group = "org.maplibre.gl", name = "android-sdk-opengl", version.ref = "maplibre" }
-
+androidx-camera-video = { group = "androidx.camera", name = "camera-video", version.ref = "cameraVideo" }
+androidx-camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "cameraVideo" }
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 android-library = { id = "com.android.library", version.ref = "agp" }

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 轨迹与会话目录 -->
+    <files-path name="tracks" path="tracks/" />
+    <!-- 导出目录（GPX/KML/GeoJSON 临时文件） -->
+    <files-path name="exports" path="exports/" />
+    <!-- 缓存（媒体缩略图等） -->
+    <cache-path name="cache" path="/" />
+</paths>
