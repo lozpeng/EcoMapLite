@@ -11,13 +11,45 @@ import org.kori.plugin.geo.map.layer.LayerFilter
  * 所有字段都有合理默认值，直接 `MapLibreMapView(modifier = ...)` 即可使用。
  */
 data class MapConfig(
-    // ---------- 底图 ----------
+    // =============================================================================================
+    // 底图
+    // =============================================================================================
     val styleUrl: String = MapStyle.LTIANDITU.uri,
 
-    // ---------- 用户位置 ----------
+    // =============================================================================================
+    // 用户位置 — 基础
+    // =============================================================================================
+    /** 首次显示时是否启用位置并跳转到用户处 */
     val showUserLocation: Boolean = true,
 
-    // ---------- 卫星影像 ----------
+    /**
+     * 位置源选择：
+     *
+     *  · false（默认）：用 MapLibre 的 `LocationComponent`。
+     *    简单、开箱即用、自带 TRACKING 相机模式。
+     *
+     *  · true：用 [org.kori.plugin.geo.map.core.location.LocationTracker]。
+     *    提供 outlier 拒绝、低速低通、速度门控、卡尔曼滤波、活动检测、
+     *    dead reckoning（隧道）、轨迹记录。
+     */
+    val useCustomLocationPipeline: Boolean = false,
+
+    /**
+     * 自定义管线时，相机跟随的缩放级别。
+     * MapLibre 的 TRACKING 内部约 16，这里保持一致。
+     */
+    val customLocationTrackingZoom: Double = 16.0,
+
+    /**
+     * 自定义管线时，用户平移后是否脱离跟随。
+     * true（默认）：平移即脱离，点"定位"重新跟随。
+     * false：始终跟随（不推荐，用户无法自由浏览）。
+     */
+    val customLocationDropFollowOnPan: Boolean = true,
+
+    // =============================================================================================
+    // 卫星影像
+    // =============================================================================================
     val satelliteOn: Boolean = true,
     val satelliteTiles: List<String> = TiandiTuStatellite.tiles().toList(),
     val satelliteMaxZoom: Float = 18f,
@@ -25,50 +57,75 @@ data class MapConfig(
     val satelliteFallbackTiles: List<String> = EsriSatellite.tiles().toList(),
     val satelliteFallbackMaxZoom: Float = 19f,
 
-    // ---------- 地形阴影 ----------
+    // =============================================================================================
+    // 地形阴影
+    // =============================================================================================
     val hillshadeOn: Boolean = false,
     val demTiles: List<String> = TerrariumDemTiles.tiles().toList(),
     val demMaxZoom: Float = 15f,
     val hillshadeExaggeration: Float = 0.32f,
 
-    // ---------- 等高线 ----------
+    // =============================================================================================
+    // 等高线
+    // =============================================================================================
     val contourOn: Boolean = false,
     val contourUrl: String = ContourTiles.url(),
     val contourSourceLayer: String = "contour",
     val contourMinZoom: Float = 10f,
     val contourMaxZoom: Float = 16f,
 
-    // ---------- 主题 ----------
+    // =============================================================================================
+    // 主题
+    // =============================================================================================
     val darkTheme: Boolean = false,
 
-    // ---------- 浮动按钮 ----------
+    // =============================================================================================
+    // 浮动按钮
+    // =============================================================================================
     val showLocationButton: Boolean = true,
     val showLayerButton: Boolean = true,
 
     val locationButtonAlignment: Alignment = Alignment.BottomEnd,
     val buttonPadding: Dp = 16.dp,
-    /** 定位按钮垂直偏移（正值向下）。 */
+    /** 定位按钮偏移（正值向下 / 向右）。 */
     val locationButtonOffsetX: Dp = 0.dp,
-    val locationButtonOffsetY: Dp = (-100).dp,
+    val locationButtonOffsetY: Dp = 0.dp,
 
-    val layerButtonAlignment: Alignment = Alignment.BottomEnd,
-    /** 图层按钮垂直偏移（正值向下）。默认 50dp 让按钮避开状态栏 / 顶部搜索框。 */
+    val layerButtonAlignment: Alignment = Alignment.TopEnd,
+    /** 图层按钮偏移。默认 50dp 让按钮避开状态栏 / 顶部搜索框。 */
     val layerButtonOffsetX: Dp = 0.dp,
-    val layerButtonOffsetY: Dp = (-60).dp,
+    val layerButtonOffsetY: Dp = 50.dp,
 
-    // ---------- 初始视角 ----------
+    // =============================================================================================
+    // 初始视角
+    // =============================================================================================
     val initialCenterLat: Double = 35.0,
     val initialCenterLng: Double = 105.0,
     val initialZoom: Double = 3.5,
 
-    // ---------- 图层过滤器 ----------
+    // =============================================================================================
+    // 图层过滤器
+    // =============================================================================================
     /**
      * 图层控制组件展示哪些图层。
-     *
-     * 默认 [LayerFilter.Default]：按 [LayerIdConvention] 命名协议自动判定，
-     * 只显示符合大类规范且非副本 / 装饰变体的图层。
+     * 默认 [LayerFilter.Default]：按 [LayerIdConvention] 命名协议自动判定。
      */
     val layerFilter: LayerFilter = LayerFilter.Default,
+
+    // =============================================================================================
+    // 轨迹记录
+    // =============================================================================================
+    /**
+     * 轨迹文件存储目录名（相对 `context.filesDir`）。
+     * 会创建在 `context.filesDir/<name>/`，默认 "tracks"。
+     */
+    val trackStorageDirName: String = "tracks",
+
+    /**
+     * 打开时是否自动开始记录轨迹（仅 useCustomLocationPipeline = true 时生效）。
+     * false（默认）：由调用方通过 `MapLibreMapView(trackRecording = ...)` 控制。
+     */
+    val autoStartTrackRecording: Boolean = false,
 ) {
     companion object {
         val Default = MapConfig()
