@@ -21,6 +21,7 @@ import org.kori.plugin.geo.map.MapLibreMapView
 import org.kori.plugin.geo.service.TrackMediaCaptureActivity
 import org.kori.plugin.geo.service.VideoCaptureActivity
 import org.kori.plugin.geo.track.RecordingPermissions
+import org.kori.plugin.geo.track.TrackHistoryScreen
 import org.kori.plugin.geo.track.TrackMapCallbacks
 import org.kori.plugin.geo.track.TrackRecordingEngine
 import org.kori.plugin.geo.track.TrackRecordingViewModel
@@ -57,6 +58,9 @@ fun TrackRecordingScreen(
 
     // ★ 卫星状态覆盖层开关（定位按钮长按触发）
     var showSatelliteStatus by remember { mutableStateOf(false) }
+
+    // ★ 历史轨迹浏览覆盖层开关（面板"历史"按钮触发）
+    var showTrackHistory by remember { mutableStateOf(false) }
 
     // =========================================================================
     // ★ 权限闸门：开始记录前确保 定位 + 通知 + 后台定位
@@ -128,6 +132,8 @@ fun TrackRecordingScreen(
             liveTrackPoints = state.liveTrackPoints,
             liveSmoothPoints = state.liveSmoothPoints,
             liveTrackMedia = state.liveMedia,
+            // ★ 历史轨迹叠加层（历史浏览加载到地图）
+            historySegments = state.historySegments,
             // ★ 定位按钮长按 → 卫星状态
             onLocationButtonLongClick = {
                 showSatelliteStatus = true
@@ -161,6 +167,11 @@ fun TrackRecordingScreen(
                     context.startPluginActivity(VideoCaptureActivity::class.java)
                 },
 
+                // ★ 历史轨迹浏览
+                onOpenHistory = {
+                    showTrackHistory = true
+                },
+
                 onOpenDetail = onOpenTrackList,
             ),
         )
@@ -169,6 +180,13 @@ fun TrackRecordingScreen(
         if (showSatelliteStatus) {
             SatelliteStatusScreen(
                 onClose = { showSatelliteStatus = false },
+            )
+        }
+
+        // ★ 历史轨迹浏览（面板"历史"按钮打开）
+        if (showTrackHistory) {
+            TrackHistoryScreen(
+                onClose = { showTrackHistory = false },
             )
         }
     }

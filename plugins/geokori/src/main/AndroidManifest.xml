@@ -33,12 +33,5 @@
         <meta-data
             android:name="plugin.entryClass"
             android:value="org.kori.plugin.geo.PluginEntryClass" />
-        <!-- ★ 前台服务：轨迹记录 FGS -->
-        <service
-            android:name=".service.TrackRecordingService"
-            android:exported="false"
-            android:foregroundServiceType="location" />
-
     </application>
-
 </manifest>

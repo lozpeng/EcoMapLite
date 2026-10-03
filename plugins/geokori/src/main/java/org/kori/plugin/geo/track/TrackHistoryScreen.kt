@@ -91,7 +91,6 @@ fun TrackHistoryScreen(
                     fontWeight = FontWeight.SemiBold,
                 )
                 Spacer(modifier = Modifier.weight(1f))
-                TextButton(onClick = onClose) { Text("关闭") }
                 IconButton(onClick = onClose) {
                     Icon(Icons.Filled.Close, contentDescription = "关闭")
                 }
@@ -145,7 +144,8 @@ fun TrackHistoryScreen(
 
     // ---- 导出格式对话框 ----
     exportTarget?.let { session ->
-        var format by remember { mutableStateOf(TrackExporter.Format.GPX) }
+        // ★ 按会话记忆格式选择，避免在会话之间泄漏上一个选择
+        var format by remember(session.id) { mutableStateOf(TrackExporter.Format.GPX) }
         AlertDialog(
             onDismissRequest = { exportTarget = null },
             title = { Text("导出轨迹") },
@@ -157,7 +157,8 @@ fun TrackHistoryScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Spacer(modifier = Modifier.height(8.dp))
-                    TrackExporter.Format.entries.forEach { f ->
+                    @Suppress("DEPRECATION")
+                    TrackExporter.Format.values().forEach { f ->
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.fillMaxWidth(),

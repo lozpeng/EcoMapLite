@@ -36,30 +36,33 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 /**
- * 轨迹记录面板（两行布局，含暂停 / 继续）。
+ * 轨迹记录面板（两行布局，含暂停 / 继续 / 历史入口）。
  *
- * ## 布局（★ 改版：状态文字独立成行）
+ * ## 布局
  *
  * ```
- * ┌────────────────────────────────┐
- * │ ● 记录中                        │  ← 状态提示（占满整行，不再被按钮挤压/竖排）
- * │ 00:45:23 · 245 点 · 2.13 km    │
- * │ ┌──┐              [⏸] 📷 🎤 🎥 │  ← 操作按钮行
- * │ │■ │   （Spacer 弹性占位）       │
- * │ └──┘                           │
- * └────────────────────────────────┘
+ * ┌────────────────────────────────────┐
+ * │ ● 记录中                    [📋]    │  ← 状态行：标题/详情 + 历史按钮（右侧，永不被挤出屏幕）
+ * │ 00:45:23 · 245 点 · 2.13 km        │
+ * │ ┌──┐              [⏸] 📷 🎤 🎥    │  ← 按钮行：主按钮在左，其余靠右
+ * │ │■ │                              │
+ * │ └──┘                              │
+ * └────────────────────────────────────┘
  * ```
  *
- * 旧版是单行 Row（FAB + 文本 + 按钮），宽度收窄后文本列被挤压换行；
- * 现在状态提示独占上部一行（maxLines=1 + 省略号），按钮在下行靠右排列。
+ * ## ★ 修复：历史按钮放状态行（不在按钮行）
+ *
+ * 旧版把 📋 放按钮行末尾：记录中时按钮行总宽约 332dp，超出 Card 限宽 300dp，
+ * 被挤到屏幕右边缘外，点击无响应。状态行用 weight 文本 + 固定图标，任何状态下
+ * 历史按钮都有确定的位置和可点区域。
  *
  * ## 状态显示
  *
- *  | 状态 | 主按钮 | 暂停按钮 | 状态行 | 媒体按钮 |
- *  |---|---|---|---|---|
- *  | 未记录 | ▶（主色） | 隐藏 | ○ 未记录 | 隐藏 |
- *  | 记录中 | ■（红色=结束） | ⏸ 暂停 | ● 记录中 | 显示 |
- *  | 暂停中 | ■（红色=结束） | ▶ 继续 | ‖ 已暂停 | 显示 |
+ *  | 状态 | 主按钮 | 暂停按钮 | 状态行 | 媒体按钮 | 历史按钮 |
+ *  |---|---|---|---|---|---|
+ *  | 未记录 | ▶（主色） | 隐藏 | ○ 未记录 | 隐藏 | 显示 |
+ *  | 记录中 | ■（红色=结束） | ⏸ 暂停 | ● 记录中 | 显示 | 显示 |
+ *  | 暂停中 | ■（红色=结束） | ▶ 继续 | ‖ 已暂停 | 显示 | 显示 |
  *
  * ## 回调
  *
@@ -67,6 +70,7 @@ import androidx.compose.ui.unit.dp
  *
  *  · [TrackMapCallbacks.onToggle]：开始 / 结束
  *  · [TrackMapCallbacks.onPauseToggle]：暂停 / 继续
+ *  · [TrackMapCallbacks.onOpenHistory]：历史轨迹浏览
  *
  * @param state 当前记录状态（时长、点数、距离、段数、暂停标志）
  * @param callbacks 所有交互回调
@@ -102,39 +106,50 @@ fun TrackRecordingPanel(
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             // =========================================================================
-            // 第一行：状态提示（占满整行——宽度再窄也不会被按钮挤压竖排）
+            // 第一行：状态提示（weight 占满） + 历史按钮（右侧固定，任何状态可见）
             // =========================================================================
-            Text(
-                text = when {
-                    !state.recording -> "○ 未记录"
-                    state.paused -> "‖ 已暂停"
-                    else -> "● 记录中"
-                },
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Medium,
-                color = when {
-                    !state.recording ->
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    state.paused ->
-                        MaterialTheme.colorScheme.tertiary
-                    else ->
-                        Color(0xFFD32F2F)
-                },
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                text = when {
-                    !state.recording -> "点击 ▶ 开始记录"
-                    state.paused ->
-                        "已暂停 · ${state.points} 点 · ${"%.2f".format(state.distanceM / 1000)} km"
-                    else -> buildRecordingSummary(state)
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = when {
+                            !state.recording -> "○ 未记录"
+                            state.paused -> "‖ 已暂停"
+                            else -> "● 记录中"
+                        },
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Medium,
+                        color = when {
+                            !state.recording ->
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            state.paused ->
+                                MaterialTheme.colorScheme.tertiary
+                            else ->
+                                Color(0xFFD32F2F)
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = when {
+                            !state.recording -> "点击 ▶ 开始记录"
+                            state.paused ->
+                                "已暂停 · ${state.points} 点 · ${"%.2f".format(state.distanceM / 1000)} km"
+                            else -> buildRecordingSummary(state)
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+
+                // ★ 历史轨迹入口：放状态行，不受按钮行宽度/记录状态影响
+                MediaIconButton(
+                    onClick = callbacks.onOpenHistory,
+                    icon = Icons.Filled.List,
+                    contentDescription = "历史轨迹",
+                )
+            }
 
             // =========================================================================
             // 第二行：操作按钮（主按钮在左，其余靠右）
@@ -166,12 +181,12 @@ fun TrackRecordingPanel(
                 Spacer(modifier = Modifier.weight(1f))
 
                 // === 暂停 / 继续按钮（仅记录中显示）===
-                // 用 TextButton 而非图标：material-icons-core 没有 Pause 图标，
-                // 引入 extended-icons 会显著增大插件体积。
+                // 用 TextButton + 字符而非图标：material-icons-core 没有 Pause 图标，
+                // 引入 extended-icons 会显著增大插件体积。文字精简为单字符避免行溢出。
                 if (state.recording) {
                     TextButton(onClick = callbacks.onPauseToggle) {
                         Text(
-                            text = if (state.paused) "▶ 继续" else "⏸ 暂停",
+                            text = if (state.paused) "▶" else "⏸",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.primary,
                             maxLines = 1,
@@ -197,13 +212,6 @@ fun TrackRecordingPanel(
                         contentDescription = "录像",
                     )
                 }
-
-                // === 历史轨迹（★ 任何状态都显示）===
-                MediaIconButton(
-                    onClick = callbacks.onOpenHistory,
-                    icon = Icons.Filled.List,
-                    contentDescription = "历史轨迹",
-                )
             }
         }
     }
@@ -240,7 +248,7 @@ private fun formatDuration(ms: Long): String {
 }
 
 /**
- * 媒体操作小图标按钮（拍照 / 录音 / 录像）。
+ * 媒体操作小图标按钮（拍照 / 录音 / 录像 / 历史）。
  */
 @Composable
 private fun MediaIconButton(
