@@ -46,6 +46,15 @@ data class TrackMapCallbacks(
     val onVideo: () -> Unit = {},
 
     /**
+     * 点击"历史"按钮（📋），打开历史轨迹浏览界面。
+     *
+     * 由调用方渲染历史覆盖层（如 [org.kori.plugin.geo.track.TrackHistoryScreen]），
+     * 支持把历史轨迹加载到地图、导出分享、删除。
+     * 任何状态（未记录/记录中/暂停中）都显示该按钮。
+     */
+    val onOpenHistory: () -> Unit = {},
+
+    /**
      * 点击"查看"按钮，打开轨迹详情 / 会话列表。
      */
     val onOpenDetail: () -> Unit = {},

@@ -180,6 +180,14 @@ fun MapLibreMapView(
     liveSmoothPoints: List<TrackPoint> = emptyList(),
     liveTrackMedia: List<TrackMediaRecord> = emptyList(),
 
+    /**
+     * 历史轨迹叠加层（历史浏览）。
+     *
+     * 每个元素为一条轨迹点序列（通常一个会话一条），以灰色线绘制在实时轨迹之下。
+     * 传空列表 = 清除叠加层。由 [TrackRecordingEngine.loadHistoryOnMap] 驱动。
+     */
+    historySegments: List<List<TrackPoint>> = emptyList(),
+
     // ★ 新增：记录面板回调。非 null 时启用内嵌记录面板。
     trackPanelCallbacks: TrackMapCallbacks? = null,
 ) {
@@ -602,6 +610,18 @@ fun MapLibreMapView(
     LaunchedEffect(styleRef, liveTrackMedia) {
         val style = styleRef ?: return@LaunchedEffect
         LiveTrackLayer.updateMedia(style, liveTrackMedia)
+    }
+
+    // =============================================================================================
+    // 历史轨迹叠加层
+    // =============================================================================================
+    LaunchedEffect(styleRef, historySegments) {
+        val style = styleRef ?: return@LaunchedEffect
+        if (historySegments.isEmpty()) {
+            LiveTrackLayer.clearHistory(style)
+        } else {
+            LiveTrackLayer.updateHistory(style, historySegments)
+        }
     }
 
     // =============================================================================================

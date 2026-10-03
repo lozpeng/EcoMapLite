@@ -491,6 +491,28 @@ object TrackRecordingEngine {
     }
 
     /**
+     * 把会话列表的全部轨迹加载到地图历史叠加层。
+     *
+     * 传单个会话 = 显示该会话全部段；传 [TrackRecordingState.sessions] = 显示全部历史轨迹。
+     * 在 IO 线程读取合并点，完成后写入 state.historySegments，地图自动刷新。
+     */
+    fun loadHistoryOnMap(sessions: List<TrackSession>) {
+        scope.launch {
+            val segs = withContext(Dispatchers.IO) {
+                sessions.mapNotNull { s ->
+                    TrackMerger.mergeRawDeduped(s).takeIf { it.size >= 2 }
+                }
+            }
+            _state.update { it.copy(historySegments = segs) }
+        }
+    }
+
+    /** 清除地图上的历史轨迹叠加层。 */
+    fun clearHistoryOnMap() {
+        _state.update { it.copy(historySegments = emptyList()) }
+    }
+
+    /**
      * 删除一个会话。
      */
     fun deleteSession(session: TrackSession) {
@@ -634,6 +656,13 @@ data class TrackRecordingState(
 
     /** 是否正在加载会话列表。 */
     val loadingSessions: Boolean = false,
+
+    /**
+     * 历史轨迹叠加层（历史浏览时显示在地图上）。
+     *
+     * 每个元素为一条轨迹点序列（一个会话一条）。由 [TrackRecordingEngine.loadHistoryOnMap] 写入。
+     */
+    val historySegments: List<List<TrackPoint>> = emptyList(),
 ) {
     /** 是否完全空闲（未记录且无实时数据）。 */
     val isIdle: Boolean

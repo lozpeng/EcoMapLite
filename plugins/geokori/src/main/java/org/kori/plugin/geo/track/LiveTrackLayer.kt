@@ -63,9 +63,14 @@ object LiveTrackLayer {
     const val SRC_MEDIA = "vela-track-live-media"
     const val LAYER_MEDIA = "vela-track-live-media-layer"
 
+    // ---- 历史轨迹叠加层 ----
+    const val SRC_HISTORY = "vela-track-history"
+    const val LAYER_HISTORY = "vela-track-history-layer"
+
     // ---- 颜色 ----
     private const val COLOR_RAW = "#FF5252"        // 原始：红
     private const val COLOR_SMOOTH = "#1A73E8"     // 平滑：蓝
+    private const val COLOR_HISTORY = "#9AA0A6"        // 历史轨迹：灰
     private const val COLOR_MEDIA_DEFAULT = "#5F6368"  // 媒体默认：灰
     private const val COLOR_MEDIA_PHOTO = "#FF5252"    // 照片：红
     private const val COLOR_MEDIA_VIDEO = "#9334E6"    // 视频：紫
@@ -84,6 +89,25 @@ object LiveTrackLayer {
         ensureRawTrackLayer(style)
         ensureSmoothTrackLayer(style)
         ensureMediaLayer(style)
+        ensureHistoryLayer(style)
+    }
+
+    // ---- 历史轨迹层（多段灰线）----
+    private fun ensureHistoryLayer(style: Style) {
+        if (style.getSource(SRC_HISTORY) == null) {
+            style.addSource(GeoJsonSource(SRC_HISTORY))
+        }
+        if (style.getLayer(LAYER_HISTORY) == null) {
+            style.addLayer(
+                LineLayer(LAYER_HISTORY, SRC_HISTORY).withProperties(
+                    PropertyFactory.lineColor(COLOR_HISTORY),
+                    PropertyFactory.lineWidth(4f),
+                    PropertyFactory.lineCap("round"),
+                    PropertyFactory.lineJoin("round"),
+                    PropertyFactory.lineOpacity(0.9f),
+                ),
+            )
+        }
     }
 
     // ---- 原始轨迹层 ----
@@ -186,6 +210,32 @@ object LiveTrackLayer {
         )
     }
 
+    /**
+     * 更新历史轨迹叠加层（历史浏览时把已保存轨迹画在地图上）。
+     *
+     * @param segments 多个轨迹段（如：每个会话一条），每段 ≥2 点才绘制
+     */
+    fun updateHistory(style: Style, segments: List<List<TrackPoint>>) {
+        val src = style.getSourceAs<GeoJsonSource>(SRC_HISTORY) ?: return
+        val features = segments
+            .filter { it.size >= 2 }
+            .map { pts ->
+                Feature.fromGeometry(
+                    LineString.fromLngLats(
+                        pts.map { Point.fromLngLat(it.lng, it.lat) },
+                    ),
+                )
+            }
+        src.setGeoJson(FeatureCollection.fromFeatures(features))
+    }
+
+    /** 清空历史轨迹叠加层。 */
+    fun clearHistory(style: Style) {
+        style.getSourceAs<GeoJsonSource>(SRC_HISTORY)?.setGeoJson(
+            FeatureCollection.fromFeatures(emptyList<Feature>()),
+        )
+    }
+
     /** 清空媒体点位。 */
     fun clearMedia(style: Style) {
         style.getSourceAs<GeoJsonSource>(SRC_MEDIA)?.setGeoJson(
@@ -197,6 +247,7 @@ object LiveTrackLayer {
     fun clearAll(style: Style) {
         clearTrack(style)
         clearMedia(style)
+        clearHistory(style)
     }
 
     /**

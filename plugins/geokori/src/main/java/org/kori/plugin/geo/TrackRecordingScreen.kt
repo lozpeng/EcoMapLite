@@ -1,5 +1,8 @@
 package org.kori.plugin.geo
 
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -17,6 +20,7 @@ import org.kori.plugin.geo.map.MapConfig
 import org.kori.plugin.geo.map.MapLibreMapView
 import org.kori.plugin.geo.service.TrackMediaCaptureActivity
 import org.kori.plugin.geo.service.VideoCaptureActivity
+import org.kori.plugin.geo.track.RecordingPermissions
 import org.kori.plugin.geo.track.TrackMapCallbacks
 import org.kori.plugin.geo.track.TrackRecordingEngine
 import org.kori.plugin.geo.track.TrackRecordingViewModel
@@ -24,23 +28,19 @@ import org.kori.plugin.geo.track.TrackRecordingViewModel
 /**
  * 轨迹记录屏幕（薄层）。
  *
- * ## 职责
- *
- *  · 只做**参数组装**——把 Engine 状态、媒体回调、面板回调传给 [MapLibreMapView]
- *  · 不处理相机、图层、位置——全部由 `MapLibreMapView` 内部管理
- *
  * ## 交互
  *
  *  · 记录面板：MapLibreMapView 内部按 Engine 状态自动显示/隐藏
  *  · 媒体采集：`startPluginActivity` 走 ComboLite 代理
- *  · ★ 定位按钮**长按**：弹出 [SatelliteStatusScreen] 卫星状态覆盖层
+ *  · 定位按钮**长按**：弹出 [SatelliteStatusScreen] 卫星状态覆盖层
+ *  · ★ 开始记录前的权限闸门（后台记录前提）：
+ *     1. 定位 + 通知权限 → 普通弹框
+ *     2. 后台定位（"始终允许"）→ 未授予时引导到系统设置页
  *
  * ## 使用
  *
  * ```kotlin
  * TrackRecordingScreen()
- * // 或
- * TrackRecordingScreen(onOpenTrackList = { navController.navigate("tracks") })
  * ```
  */
 @Composable
@@ -49,8 +49,7 @@ fun TrackRecordingScreen(
 ) {
     val context = LocalContext.current
 
-    // 手动构造 ViewModel（pluginModule 为空，不能用 koinViewModel()）。
-    // 传 applicationContext，防止泄漏 Activity。
+    // 手动构造 ViewModel（pluginModule 为空，不能用 koinViewModel()）
     val viewModel = remember {
         TrackRecordingViewModel(context.applicationContext)
     }
@@ -58,6 +57,58 @@ fun TrackRecordingScreen(
 
     // ★ 卫星状态覆盖层开关（定位按钮长按触发）
     var showSatelliteStatus by remember { mutableStateOf(false) }
+
+    // =========================================================================
+    // ★ 权限闸门：开始记录前确保 定位 + 通知 + 后台定位
+    // =========================================================================
+    // 流程：弹框申请（定位+通知）→ 若后台定位未授予，打开系统设置页引导
+    // "位置信息 → 始终允许"，Toast 提示后用户回到页面再次点击开始。
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { result ->
+        val anyGranted = result.values.any { it }
+        if (!anyGranted) {
+            Toast.makeText(context, "需要定位权限才能记录轨迹", Toast.LENGTH_SHORT).show()
+            return@rememberLauncherForActivityResult
+        }
+        if (!RecordingPermissions.hasBackgroundLocation(context)) {
+            Toast.makeText(
+                context,
+                "后台记录需要“始终允许”定位：设置 → 应用 → 权限 → 位置信息",
+                Toast.LENGTH_LONG,
+            ).show()
+            RecordingPermissions.openAppSettings(context)
+            return@rememberLauncherForActivityResult
+        }
+        // 全部就绪 → 开始记录
+        viewModel.toggleRecording()
+    }
+
+    /** 面板"开始/结束"的统一入口：先过权限闸门。 */
+    val onToggleRecording: () -> Unit = {
+        when {
+            // 结束记录不需要权限检查
+            state.recording -> viewModel.toggleRecording()
+
+            // 缺定位/通知 → 弹框申请
+            !RecordingPermissions.hasLocation(context) ||
+                    !RecordingPermissions.hasNotifications(context) -> {
+                permissionLauncher.launch(RecordingPermissions.requestablePermissions())
+            }
+
+            // 缺后台定位 → 引导系统设置（"始终允许"无法弹框授予）
+            !RecordingPermissions.hasBackgroundLocation(context) -> {
+                Toast.makeText(
+                    context,
+                    "后台记录需要“始终允许”定位：设置 → 应用 → 权限 → 位置信息",
+                    Toast.LENGTH_LONG,
+                ).show()
+                RecordingPermissions.openAppSettings(context)
+            }
+
+            else -> viewModel.toggleRecording()
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         MapLibreMapView(
@@ -81,10 +132,10 @@ fun TrackRecordingScreen(
             onLocationButtonLongClick = {
                 showSatelliteStatus = true
             },
-            // 记录面板回调——非 null 时 MapLibreMapView 会在 recording 时自动显示面板
+            // 记录面板回调
             trackPanelCallbacks = TrackMapCallbacks(
-                // 开始 / 结束
-                onToggle = { viewModel.toggleRecording() },
+                // 开始 / 结束（★ 经过权限闸门）
+                onToggle = onToggleRecording,
 
                 // 暂停 / 继续
                 onPauseToggle = { viewModel.togglePause() },

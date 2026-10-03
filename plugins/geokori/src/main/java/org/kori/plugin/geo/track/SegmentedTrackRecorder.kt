@@ -167,6 +167,14 @@ class SegmentedTrackRecorder(
     @Volatile private var sensorSampler: SensorSampler? = null
 
     // =============================================================================================
+    // 会话级实时显示缓冲（★ 跨段累计）
+    // =============================================================================================
+    // 段切换（rollSegment）会重建 currentRawBuffer，旧实现里地图轨迹随切段被清空。
+    // 这里维护整个 session 的显示缓冲：切了 N 段，地图上 N 段全部保留，直到会话结束。
+    private val displayRaw = mutableListOf<TrackPoint>()
+    private val displaySmooth = mutableListOf<TrackPoint>()
+
+    // =============================================================================================
     // 实时数据
     // =============================================================================================
 
@@ -222,6 +230,8 @@ class SegmentedTrackRecorder(
         totalSegments = 0
         totalDistanceM = 0.0
         segmentIndex = 0
+        displayRaw.clear()
+        displaySmooth.clear()
 
         startNewSegment()
         writeSessionJson(dir)
@@ -368,6 +378,12 @@ class SegmentedTrackRecorder(
         totalRawPoints++
         totalSmoothPoints++
 
+        // ★ 会话级显示缓冲：跨段累计，地图持续显示整个 session 的轨迹
+        displayRaw.add(rawPoint)
+        displaySmooth.add(smoothPoint)
+        trimDisplayBuffer(displayRaw)
+        trimDisplayBuffer(displaySmooth)
+
         // 累加距离
         val stepDist = lastKept?.let {
             GeoMath.haversineMeters(it.lat, it.lng, rawPoint.lat, rawPoint.lng)
@@ -380,9 +396,9 @@ class SegmentedTrackRecorder(
         lastElapsedNanos = nowNanos
         if (loc.hasSpeed()) lastAcceptedSpeed = loc.speed
 
-        // 通知实时绘制（限制点数）
-        lastRawBuffer = snapshotTail(rawBuf)
-        lastSmoothBuffer = snapshotTail(smoothBuf)
+        // 通知实时绘制（★ 会话级缓冲：含所有已完成的段）
+        lastRawBuffer = snapshotTail(displayRaw)
+        lastSmoothBuffer = snapshotTail(displaySmooth)
         _liveTrack.tryEmit(lastRawBuffer to lastSmoothBuffer)
 
         // 检查是否切段（在写入之后）
@@ -412,8 +428,8 @@ class SegmentedTrackRecorder(
         lastElapsedNanos = 0L
         rawFilter.reset()
 
-        lastRawBuffer = emptyList()
-        lastSmoothBuffer = emptyList()
+        // ★ 不再清空 lastRawBuffer/lastSmoothBuffer——显示缓冲跨段累计，
+        // 地图应保留已完成的段直至会话结束
     }
 
     private fun rollSegment() {
@@ -480,6 +496,11 @@ class SegmentedTrackRecorder(
         return "$safe-$stamp"
     }
 
+    /** 显示缓冲超限丢弃最旧点（保持内存有界）。 */
+    private fun trimDisplayBuffer(buf: MutableList<TrackPoint>) {
+        while (buf.size > MAX_DISPLAY_POINTS) buf.removeAt(0)
+    }
+
     /** 取 buffer 尾部 LIVE_BUFFER_MAX 个点。 */
     private fun snapshotTail(buf: List<TrackPoint>): List<TrackPoint> =
         if (buf.size <= LIVE_BUFFER_MAX) buf.toList()
@@ -488,5 +509,8 @@ class SegmentedTrackRecorder(
     companion object {
         private const val MAX_POINTS_PER_SEGMENT = 20_000
         private const val LIVE_BUFFER_MAX = 2000
+
+        /** 会话级实时显示缓冲上限（跨段累计，地图绘制用）。 */
+        private const val MAX_DISPLAY_POINTS = 5000
     }
 }

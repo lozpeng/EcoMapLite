@@ -12,6 +12,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
@@ -196,6 +197,13 @@ fun TrackRecordingPanel(
                         contentDescription = "录像",
                     )
                 }
+
+                // === 历史轨迹（★ 任何状态都显示）===
+                MediaIconButton(
+                    onClick = callbacks.onOpenHistory,
+                    icon = Icons.Filled.List,
+                    contentDescription = "历史轨迹",
+                )
             }
         }
     }

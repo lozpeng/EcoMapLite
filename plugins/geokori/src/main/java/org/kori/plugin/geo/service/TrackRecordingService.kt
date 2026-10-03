@@ -16,21 +16,10 @@ import com.combo.core.component.service.BasePluginService
 /**
  * 轨迹记录前台服务（ComboLite 插件版）。
  *
- * ## ★ B3 修复：继承 BasePluginService（原来手写 Service + IPluginService）
+ * ## 作用
  *
- * 文档（四大组件指南）明确要求插件 Service 继承 [BasePluginService]：
- *  · 框架自动注入 `proxyActivity` / `proxyService`，无需手写 `onAttach`
- *  · 框架负责把真实宿主 Service 的所有生命周期事件转发给本类
- *  · 原来 `realService = proxyService ?: this` 的回退分支是**坏的**——插件
- *    Service 不是真实组件，`this` 上调用 `startForeground()` 会直接崩溃
- *
- * ## 与 Engine 的边界
- *
- * 本类**不包含业务逻辑**，只做两件事：
- *  · 维护前台通知（保证 Android 8+ 进程保活，满足持续定位要求）
- *  · 响应通知栏"停止"按钮的广播（交给 [TrackFgsReceiver] 处理）
- *
- * 业务逻辑全部在 [org.kori.plugin.geo.track.TrackRecordingEngine] 里。
+ * 后台记录的核心保障：前台服务 + 持续通知让系统认为本进程"用户可见"，
+ * 从而不在切后台后被清理，GPS 回调持续到达 [org.kori.plugin.geo.track.TrackRecordingEngine]。
  *
  * ## 生命周期
  *
@@ -40,37 +29,23 @@ import com.combo.core.component.service.BasePluginService
  * TrackFgsBridge.stop(ctx)    → ACTION_STOP   → stopForeground + stopSelf
  * ```
  *
- * ## 宿主端配合（★ 缺一不可）
+ * ## ★ sticky 重启的空 Intent 兜底（重要）
  *
- * 宿主 `Application.onCreate()`：
- * ```kotlin
- * PluginManager.proxyManager.setServicePool(listOf(
- *     HostService1::class.java,   // 至少一个，继承 BaseHostService 的空类
- * ))
- * ```
- * 宿主 `AndroidManifest.xml`：**每个 HostServiceN 必须声明**
- * ```xml
- * <service
- *     android:name=".services.HostService1"
- *     android:foregroundServiceType="location"
- *     android:exported="false" />
- * ```
- * 否则 `startForeground(..., FOREGROUND_SERVICE_TYPE_LOCATION)` 抛异常。
+ * 返回 START_STICKY 后，进程被系统杀掉再重启时 onStartCommand 的 intent 为 null。
+ * 此时**必须在 5 秒内调用 startForeground**（否则系统直接抛 FGS 重启异常）。
+ * 旧实现只对 API < 26 兜底，API 26+ 必崩——现已改为全版本兜底。
  *
- * ## ★ B4 修复说明
+ * ## 宿主端配合
  *
- * 插件自己的 `AndroidManifest.xml` **不应再声明**本 Service——
- * ComboLite 模型下插件 Service 由宿主代理池承载，插件 manifest 里的
- * `<service>` 声明不会被注册为真实组件（已从新 manifest 中移除）。
+ *  · `ProxyManager.setServicePool(...)` 至少一个 `BaseHostService` 子类
+ *  · 宿主 manifest 每个 HostServiceN 声明 `foregroundServiceType="location"`
+ *  · 运行时权限：`ACCESS_BACKGROUND_LOCATION`（始终允许）+ `POST_NOTIFICATIONS`
  */
 class TrackRecordingService : BasePluginService() {
 
     /**
      * 真实宿主 Service（由 BasePluginService 注入）。
-     *
-     * 所有系统能力（startForeground / getSystemService / packageManager …）
-     * 都必须通过它访问。未注入时各操作静默跳过——正常情况下 ProxyManager
-     * 一定会在调用 onStartCommand 之前完成注入。
+     * 未注入时各操作静默跳过——正常情况下 ProxyManager 一定先注入再调 onStartCommand。
      */
     private val realService: Service?
         get() = proxyService
@@ -101,17 +76,14 @@ class TrackRecordingService : BasePluginService() {
             }
 
             ACTION_STOP -> {
-                // 通知栏"停止"按钮的兜底路径；主路径见 [TrackFgsReceiver]。
-                // stopSelf() 必须执行——它触发代理槽位归还。
                 runCatching { stopForegroundCompat() }
                 runCatching { realService?.stopSelf() }
             }
 
             else -> {
-                // 无 action 时的兜底：老版本系统确保进入前台
-                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-                    startForegroundCompat(DEFAULT_TITLE, DEFAULT_TEXT)
-                }
+                // ★ sticky 重启 / 系统拉起：intent 为 null 或无 action。
+                // 全版本兜底进入前台——FGS 被系统重启后 5 秒内必须 startForeground。
+                startForegroundCompat(DEFAULT_TITLE, DEFAULT_TEXT)
             }
         }
         return Service.START_STICKY
@@ -131,8 +103,6 @@ class TrackRecordingService : BasePluginService() {
         val notif = buildNotification(title, text)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            // Android 10+：显式声明 foregroundServiceType。
-            // 必须与宿主 Manifest 中 HostServiceN 声明的 type 有交集（location）。
             target.startForeground(
                 NOTIFICATION_ID,
                 notif,
@@ -235,8 +205,8 @@ class TrackRecordingService : BasePluginService() {
         /**
          * 通知栏"停止"按钮发出的广播。
          *
-         * 由 [TrackFgsReceiver] 动态注册接收（注册时机见 `PluginEntryClass`）。
-         * 广播**显式 setPackage(packageName)**，不会泄漏到其它应用。
+         * 由 [TrackFgsReceiver] 动态注册接收。广播**显式 setPackage(packageName)**，
+         * 不会泄漏到其它应用。
          */
         const val ACTION_USER_STOP = "org.kori.plugin.geo.fgs.USER_STOP"
 
