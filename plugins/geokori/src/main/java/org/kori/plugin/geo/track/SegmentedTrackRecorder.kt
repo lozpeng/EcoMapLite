@@ -175,6 +175,17 @@ class SegmentedTrackRecorder(
     private val displaySmooth = mutableListOf<TrackPoint>()
 
     // =============================================================================================
+    // 过程事件（暂停/继续，★ 一等数据：写入 session.json，时间线按事件对精确展示）
+    // =============================================================================================
+
+    /** 本会话的事件列表。 */
+    private val events = mutableListOf<TrackEvent>()
+
+    /** 最近记录的轨迹点坐标（事件坐标取它；尚未记录点时为 null）。 */
+    private var lastRecordedLat: Double? = null
+    private var lastRecordedLng: Double? = null
+
+    // =============================================================================================
     // 实时数据
     // =============================================================================================
 
@@ -232,6 +243,9 @@ class SegmentedTrackRecorder(
         segmentIndex = 0
         displayRaw.clear()
         displaySmooth.clear()
+        events.clear()
+        lastRecordedLat = null
+        lastRecordedLng = null
 
         startNewSegment()
         writeSessionJson(dir)
@@ -378,6 +392,10 @@ class SegmentedTrackRecorder(
         totalRawPoints++
         totalSmoothPoints++
 
+        // ★ 事件坐标基准：更新最近记录点
+        lastRecordedLat = rawPoint.lat
+        lastRecordedLng = rawPoint.lng
+
         // ★ 会话级显示缓冲：跨段累计，地图持续显示整个 session 的轨迹
         displayRaw.add(rawPoint)
         displaySmooth.add(smoothPoint)
@@ -441,6 +459,25 @@ class SegmentedTrackRecorder(
     // 媒体
     // =============================================================================================
 
+    /**
+     * 记录一个过程事件（暂停/继续）。
+     *
+     * 由 [org.kori.plugin.geo.track.TrackRecordingEngine.pause] / [resume] 调用。
+     * 坐标取最近记录的轨迹点（尚未记录点时为 0.0）。立即持久化到 session.json。
+     */
+    fun recordEvent(type: TrackEventType, atMs: Long = System.currentTimeMillis()) {
+        if (sessionDir == null) return
+        events.add(
+            TrackEvent(
+                type = type,
+                timestampMs = atMs,
+                lat = lastRecordedLat ?: 0.0,
+                lng = lastRecordedLng ?: 0.0,
+            ),
+        )
+        sessionDir?.let { writeSessionJson(it) }
+    }
+
     fun recordMedia(record: TrackMediaRecord) {
         val dir = sessionDir ?: return
         val mediaDir = File(dir, "media").apply { mkdirs() }
@@ -475,6 +512,21 @@ class SegmentedTrackRecorder(
                 put("totalSegments", totalSegments)
                 put("totalDistanceM", totalDistanceM)
                 put("rejectedPoints", rejectedPoints)
+                put(
+                    "events",
+                    org.json.JSONArray().apply {
+                        for (e in events) {
+                            put(
+                                org.json.JSONObject().apply {
+                                    put("type", e.type.name)
+                                    put("timestampMs", e.timestampMs)
+                                    put("lat", e.lat)
+                                    put("lng", e.lng)
+                                },
+                            )
+                        }
+                    },
+                )
                 put(
                     "segmentConfig",
                     org.json.JSONObject().apply {

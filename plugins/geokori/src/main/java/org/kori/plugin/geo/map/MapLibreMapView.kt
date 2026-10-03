@@ -79,7 +79,7 @@ import org.kori.plugin.geo.track.TrackMapCallbacks
 import org.kori.plugin.geo.track.TrackMediaRecord
 import org.kori.plugin.geo.track.TrackPoint
 import org.kori.plugin.geo.track.TrackRecordingEngine
-import org.kori.plugin.geo.track.TrackRecordingPanel
+import org.kori.plugin.geo.track.TrackRecordingHud
 import org.kori.plugin.geo.track.TrackServiceState
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -1035,7 +1035,8 @@ private fun RecordingPanelOverlay(
     // 面板只在记录中才出现，而开始按钮恰恰只在未记录时才需要。
 
 
-    TrackRecordingPanel(
+    // ★ 沉浸式 HUD（与地图融合的玻璃拟态悬浮界面，替代卡片面板）
+    TrackRecordingHud(
         state = TrackServiceState(
             recording = state.recording,
             points = state.points,
@@ -1043,6 +1044,9 @@ private fun RecordingPanelOverlay(
             elapsedMs = state.elapsedMs,
             segments = state.segments,
             paused = state.paused,
+            currentSpeedMps = state.currentSpeedMps,
+            currentLat = state.currentLat,
+            currentLng = state.currentLng,
         ),
         callbacks = callbacks,
         modifier = modifier,

@@ -127,6 +127,13 @@ data class TrackSession(
     val tags: List<String> = emptyList(),
 
     /**
+     * 记录过程中的事件（暂停/继续等），由 [SegmentedTrackRecorder.recordEvent] 写入。
+     *
+     * v2 及更早的会话无此字段（空列表）。
+     */
+    val events: List<TrackEvent> = emptyList(),
+
+    /**
      * 会话数据版本号。
      *
      * 用于未来 schema 升级时兼容旧文件。

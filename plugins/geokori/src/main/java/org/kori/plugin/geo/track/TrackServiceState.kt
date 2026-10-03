@@ -14,6 +14,15 @@ data class TrackServiceState(
 
     val points: Int = 0,
     val distanceM: Double = 0.0,
+
+    /** 当前速度（m/s，来自滤波管线；未知为 null）。 */
+    val currentSpeedMps: Float? = null,
+
+    /** 当前纬度（WGS84；未知为 null）。 */
+    val currentLat: Double? = null,
+
+    /** 当前经度。 */
+    val currentLng: Double? = null,
     val elapsedMs: Long = 0L,
     val segments: Int = 0,
 )

@@ -45,6 +45,7 @@ object TrackSessionStore {
         }.sortedBy { it.index }
 
         val media = readMedia(dir)
+        val events = readEvents(json)
 
         return TrackSession(
             id = dir.name,
@@ -57,6 +58,7 @@ object TrackSessionStore {
             totalRawPoints = if (totalRaw > 0) totalRaw else segments.sumOf { it.points },
             totalSmoothPoints = totalSmooth,
             totalDistanceM = json.optDouble("totalDistanceM", 0.0),
+            events = events,
         )
     }
     /**
@@ -86,6 +88,22 @@ object TrackSessionStore {
     fun delete(session: TrackSession) {
         session.dir.deleteRecursively()
     }
+
+    /** 解析 session.json 的 events 数组（v2 及更早无此字段 → 空列表）。 */
+    private fun readEvents(json: org.json.JSONObject): List<TrackEvent> =
+        json.optJSONArray("events")?.let { arr ->
+            (0 until arr.length()).mapNotNull { i ->
+                runCatching {
+                    val o = arr.getJSONObject(i)
+                    TrackEvent(
+                        type = TrackEventType.valueOf(o.getString("type")),
+                        timestampMs = o.getLong("timestampMs"),
+                        lat = o.optDouble("lat", 0.0),
+                        lng = o.optDouble("lng", 0.0),
+                    )
+                }.getOrNull()
+            }
+        }.orEmpty()
 
     private fun readMedia(dir: File): List<TrackMediaRecord> {
         val mediaDir = File(dir, "media")

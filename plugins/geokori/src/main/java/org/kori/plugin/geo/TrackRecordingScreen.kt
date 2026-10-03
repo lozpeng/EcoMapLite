@@ -5,14 +5,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -24,9 +22,10 @@ import org.kori.plugin.geo.service.TrackMediaCaptureActivity
 import org.kori.plugin.geo.service.VideoCaptureActivity
 import org.kori.plugin.geo.track.RecordingPermissions
 import org.kori.plugin.geo.track.TrackHistoryScreen
-import org.kori.plugin.geo.track.TrackPlaybackBar
+import org.kori.plugin.geo.track.TrackPlaybackScreen
 import org.kori.plugin.geo.track.TrackPoint
 import org.kori.plugin.geo.track.TrackSession
+import org.kori.plugin.geo.track.TrackTimelineScreen
 import org.kori.plugin.geo.track.TrackMapCallbacks
 import org.kori.plugin.geo.track.TrackRecordingEngine
 import org.kori.plugin.geo.track.TrackRecordingViewModel
@@ -67,9 +66,11 @@ fun TrackRecordingScreen(
     // ★ 历史轨迹浏览覆盖层开关（面板"历史"按钮触发）
     var showTrackHistory by remember { mutableStateOf(false) }
 
-    // ★ 轨迹回放：当前回放会话 + 回放点（驱动地图标记）
+    // ★ 轨迹回放（全屏沉浸式回放屏）
     var playbackSession by remember { mutableStateOf<TrackSession?>(null) }
-    var playbackPoint by remember { mutableStateOf<TrackPoint?>(null) }
+
+    // ★ 轨迹时间线
+    var timelineSession by remember { mutableStateOf<TrackSession?>(null) }
 
     // =========================================================================
     // ★ 权限闸门：开始记录前确保 定位 + 通知 + 后台定位
@@ -143,8 +144,6 @@ fun TrackRecordingScreen(
             liveTrackMedia = state.liveMedia,
             // ★ 历史轨迹叠加层（历史浏览加载到地图）
             historySegments = state.historySegments,
-            // ★ 轨迹回放标记
-            playbackPoint = playbackPoint,
             // ★ 定位按钮长按 → 卫星状态
             onLocationButtonLongClick = {
                 showSatelliteStatus = true
@@ -200,23 +199,26 @@ fun TrackRecordingScreen(
                 onClose = { showTrackHistory = false },
                 onPlay = { session ->
                     playbackSession = session
-                    playbackPoint = null
+                },
+                onTimeline = { session ->
+                    timelineSession = session
                 },
             )
         }
 
-        // ★ 轨迹回放控制条
+        // ★ 轨迹回放（全屏沉浸式）
         playbackSession?.let { session ->
-            TrackPlaybackBar(
+            TrackPlaybackScreen(
                 session = session,
-                onPoint = { playbackPoint = it },
-                onClose = {
-                    playbackSession = null
-                    playbackPoint = null
-                },
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 260.dp),
+                onClose = { playbackSession = null },
+            )
+        }
+
+        // ★ 轨迹时间线
+        timelineSession?.let { session ->
+            TrackTimelineScreen(
+                session = session,
+                onClose = { timelineSession = null },
             )
         }
     }

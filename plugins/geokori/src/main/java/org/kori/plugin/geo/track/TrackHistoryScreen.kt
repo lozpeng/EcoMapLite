@@ -1,6 +1,7 @@
 package org.kori.plugin.geo.track
 
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -60,8 +61,10 @@ import java.util.Locale
 fun TrackHistoryScreen(
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
-    /** ★ 回放回调：由调用方启动回放控制条（见 [TrackPlaybackBar]）。 */
+    /** ★ 回放回调：由调用方启动沉浸式回放屏（见 [TrackPlaybackScreen]）。 */
     onPlay: (TrackSession) -> Unit = {},
+    /** ★ 时间线回调：由调用方打开时间线界面（见 [TrackTimelineScreen]）。 */
+    onTimeline: (TrackSession) -> Unit = {},
 ) {
     val context = LocalContext.current
     val state by TrackRecordingEngine.state.collectAsState()
@@ -75,6 +78,9 @@ fun TrackHistoryScreen(
     var exportTarget by remember { mutableStateOf<TrackSession?>(null) }
     // 删除确认对话框的目标会话
     var deleteTarget by remember { mutableStateOf<TrackSession?>(null) }
+
+    // ★ 系统返回键关闭（导出/删除对话框打开时由对话框自身处理）
+    BackHandler { onClose() }
 
     Surface(
         modifier = modifier.fillMaxSize(),
@@ -137,6 +143,10 @@ fun TrackHistoryScreen(
                             },
                             onPlay = {
                                 onPlay(session)
+                                onClose()
+                            },
+                            onTimeline = {
+                                onTimeline(session)
                                 onClose()
                             },
                             onExport = { exportTarget = session },
@@ -216,6 +226,7 @@ private fun SessionRow(
     session: TrackSession,
     onShow: () -> Unit,
     onPlay: () -> Unit,
+    onTimeline: () -> Unit,
     onExport: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -247,6 +258,7 @@ private fun SessionRow(
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 TextButton(onClick = onShow) { Text("显示") }
                 TextButton(onClick = onPlay) { Text("回放") }
+                TextButton(onClick = onTimeline) { Text("时间线") }
                 TextButton(onClick = onExport) { Text("导出") }
                 TextButton(onClick = onDelete) { Text("删除", color = MaterialTheme.colorScheme.error) }
             }

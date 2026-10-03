@@ -167,6 +167,38 @@ object TrackShare {
         return null
     }
 
+    // =============================================================================================
+    // 媒体查看（时间线/详情页播放用）
+    // =============================================================================================
+
+    /**
+     * 用系统播放器打开一个媒体文件（时间线的"播放"）。
+     *
+     * URI 生成与分享同一策略：宿主 FileProvider 优先，API 29+ MediaStore 兜底。
+     */
+    fun openMedia(context: Context, file: File, mime: String) {
+        val ctx = context.applicationContext
+        val uri = buildShareUri(ctx, file, mime)
+        if (uri == null) {
+            Toast.makeText(
+                ctx,
+                "无法生成播放地址（${file.absolutePath}）",
+                Toast.LENGTH_LONG,
+            ).show()
+            return
+        }
+        runCatching {
+            ctx.startActivity(
+                Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(uri, mime)
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }.onFailure {
+            Toast.makeText(ctx, "未找到可播放该文件的应用", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun mimeOf(format: TrackExporter.Format): String = when (format) {
         TrackExporter.Format.GPX -> "application/gpx+xml"
         TrackExporter.Format.KML -> "application/vnd.google-earth.kml+xml"

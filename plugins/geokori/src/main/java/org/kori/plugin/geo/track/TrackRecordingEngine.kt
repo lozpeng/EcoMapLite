@@ -249,6 +249,9 @@ object TrackRecordingEngine {
                     distanceM = rec.totalDistanceM,
                     segments = rec.totalSegments,
                     elapsedMs = effectiveElapsedMs(rec, now),
+                    currentSpeedMps = fix.speedMps,
+                    currentLat = fix.lat,
+                    currentLng = fix.lng,
                 )
             }
             // 1 Hz 节流更新 FGS 通知
@@ -346,6 +349,8 @@ object TrackRecordingEngine {
             paused = true
             pauseStartMs = System.currentTimeMillis()
             _state.update { it.copy(paused = true) }
+            // ★ 暂停事件：一等数据，时间线按事件对精确展示停留时长
+            runCatching { recorder?.recordEvent(TrackEventType.PAUSE, pauseStartMs) }
             runCatching {
                 TrackFgsBridge.update(
                     appContext ?: return@synchronized,
@@ -368,6 +373,8 @@ object TrackRecordingEngine {
             pausedTotalMs += System.currentTimeMillis() - pauseStartMs
             pauseStartMs = 0L
             _state.update { it.copy(paused = false) }
+            // ★ 继续事件：与 PAUSE 配对
+            runCatching { recorder?.recordEvent(TrackEventType.RESUME, System.currentTimeMillis()) }
             runCatching {
                 TrackFgsBridge.update(
                     appContext ?: return@synchronized,
@@ -630,6 +637,15 @@ data class TrackRecordingState(
 
     /** 记录时长（毫秒），从会话开始时算起，**已扣除暂停时长**。 */
     val elapsedMs: Long = 0L,
+
+    /** 当前速度（m/s，滤波管线输出；暂停时保留最后值）。 */
+    val currentSpeedMps: Float? = null,
+
+    /** 当前纬度（WGS84；未定位时为 null）。 */
+    val currentLat: Double? = null,
+
+    /** 当前经度。 */
+    val currentLng: Double? = null,
 
     /** 已完成的分段数。 */
     val segments: Int = 0,

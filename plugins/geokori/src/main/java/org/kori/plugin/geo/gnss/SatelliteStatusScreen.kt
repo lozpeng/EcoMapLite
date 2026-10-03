@@ -1,5 +1,6 @@
 package org.kori.plugin.geo.gnss
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -81,6 +82,9 @@ fun SatelliteStatusScreen(
     DisposableEffect(Unit) {
         onDispose { provider.stop() }
     }
+
+    // ★ 系统返回键关闭
+    BackHandler { onClose() }
 
     Surface(
         modifier = modifier.fillMaxSize(),
