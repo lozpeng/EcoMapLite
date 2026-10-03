@@ -73,7 +73,7 @@ import org.kori.plugin.geo.track.TrackMapCallbacks
 import org.kori.plugin.geo.track.di.TrackMediaRecord
 import org.kori.plugin.geo.track.di.TrackPoint
 import org.kori.plugin.geo.track.TrackRecordingEngine
-import org.kori.plugin.geo.track.TrackRecordingHud
+import org.kori.plugin.geo.track.ui.TrackRecordingHud
 import org.kori.plugin.geo.track.di.TrackServiceState
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
@@ -137,6 +137,9 @@ private object CameraSmoothing {
  * ## Bug 修复
  *
  *  · B6：相机 ticker 里实时读 `map.cameraPosition.tilt`
+ *  · B7：四态循环初始状态与 `config.showUserLocation` 同步——
+ *        默认开启定位时按钮已激活，循环计数必须从状态 1（跟随）开始，
+ *        否则第一次点击会走错分支（跳过"回正北"直接关定位）
  */
 @Composable
 fun MapLibreMapView(
@@ -288,11 +291,29 @@ fun MapLibreMapView(
     // =========================================================================================
     // ★ 定位按钮四态循环（自定义管线）
     // =========================================================================================
-    /** 相机朝向模式：定位按钮循环驱动（默认朝北）。 */
-    var bearingMode by remember { mutableStateOf(BearingMode.NORTH) }
+    /**
+     * 相机朝向模式：定位按钮循环驱动。
+     *
+     * ★ B7 修复：初始值与 `config.showUserLocation` / `config.customLocationRotateToBearing`
+     * 同步——地图默认开启定位时，朝向模式即进入"跟随"而非停留在 NORTH。
+     */
+    var bearingMode by remember {
+        mutableStateOf(
+            if (config.showUserLocation && config.customLocationRotateToBearing) {
+                BearingMode.GPS_BEARING
+            } else {
+                BearingMode.NORTH
+            },
+        )
+    }
 
-    /** 循环主状态：0=关闭 1=跟随朝北 2=罗盘模式。 */
-    var locateCycleState by remember { mutableIntStateOf(0) }
+    /**
+     * 循环主状态：0=关闭 1=跟随朝北 2=罗盘模式。
+     *
+     * ★ B7 修复：默认开启定位时从状态 1 开始，与 [locationEnabled] / [customFollow]
+     * 保持一致——否则按钮视觉已激活，第一次点击却跳过"回正北"分支。
+     */
+    var locateCycleState by remember { mutableIntStateOf(if (config.showUserLocation) 1 else 0) }
 
     /** 状态 1 内部子标记：区分"刚进入"与"已点过恢复朝北"，决定下次点击是否进罗盘。 */
     var northResetDone by remember { mutableStateOf(false) }
@@ -821,6 +842,7 @@ fun MapLibreMapView(
                 //  第 4 次（罗盘中）：关闭定位，恢复朝北，回到第 1 态
                 // 支线：用户平移地图后点击 = 恢复跟随（保持当前朝向模式，
                 //       不打乱循环计数）
+                // 初始态：config.showUserLocation=true 时从状态 1 开始（B7 修复）
                 when {
                     !locationEnabled -> {
                         locationEnabled = true

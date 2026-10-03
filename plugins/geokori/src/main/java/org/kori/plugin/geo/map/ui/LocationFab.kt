@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Navigation
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -41,9 +42,12 @@ enum class BearingMode {
  *
  *  | 状态 | 图标 | 颜色 |
  *  |---|---|---|
- *  | 关闭（locationEnabled=false） | 📍 LocationOn | surface/onSurface |
- *  | 跟随朝北 | 📍 LocationOn | primaryContainer |
+ *  | 关闭（locationEnabled=false） | 📍 LocationOn（灰） | surface/onSurface |
+ *  | 跟随（朝北 / 转向） | ◎ MyLocation（醒目靶心） | primary/onPrimary |
  *  | 罗盘模式 | ➤ Navigation（随 [compassIconDeg] 旋转，指向手机朝向） | tertiaryContainer |
+ *
+ * 开启定位后用 MyLocation + 实心 primary 底色，与关闭态的灰底 📍 形成强对比，
+ * 一眼可辨定位是否激活。
  *
  * ## 手势
  *
@@ -111,7 +115,8 @@ fun LocationFab(
                         !locationEnabled -> MaterialTheme.colorScheme.surface
                         bearingMode == BearingMode.COMPASS ->
                             MaterialTheme.colorScheme.tertiaryContainer
-                        else -> MaterialTheme.colorScheme.primaryContainer
+                        // ★ 跟随态用实心 primary，醒目提示"定位已激活"
+                        else -> MaterialTheme.colorScheme.primary
                     },
                     CircleShape,
                 )
@@ -125,7 +130,8 @@ fun LocationFab(
                 imageVector = when {
                     !locationEnabled -> Icons.Filled.LocationOn
                     bearingMode == BearingMode.COMPASS -> Icons.Filled.Navigation
-                    else -> Icons.Filled.LocationOn
+                    // ★ 开启定位后切换为靶心图标，与关闭态的 LocationOn 区分
+                    else -> Icons.Filled.MyLocation
                 },
                 contentDescription = when {
                     !locationEnabled -> "打开定位"
@@ -137,7 +143,8 @@ fun LocationFab(
                     !locationEnabled -> MaterialTheme.colorScheme.onSurface
                     bearingMode == BearingMode.COMPASS ->
                         MaterialTheme.colorScheme.onTertiaryContainer
-                    else -> MaterialTheme.colorScheme.onPrimaryContainer
+                    // ★ 实心底色上用 onPrimary 保证对比度
+                    else -> MaterialTheme.colorScheme.onPrimary
                 },
                 modifier = Modifier
                     .size(24.dp)

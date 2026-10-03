@@ -1,4 +1,4 @@
-package org.kori.plugin.geo.track
+package org.kori.plugin.geo.track.ui
 
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -41,10 +41,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.findRootCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.text.font.FontFamily
@@ -53,6 +57,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
+import org.kori.plugin.geo.track.TrackMapCallbacks
 import org.kori.plugin.geo.track.di.TrackServiceState
 import kotlin.math.roundToInt
 import kotlin.time.Duration.Companion.milliseconds
@@ -69,6 +74,29 @@ import kotlin.time.Duration.Companion.milliseconds
  *  · ★ **手动拖放**：顶部胶囊与底部按钮簇均可手指拖动 reposition，
  *    松手即停（不持久化，重进恢复默认）
  *
+ * ## 修复（v2.3 + v2.4）
+ *
+ *  · ★ **拖动边界修复（v2.3）**：v2"居中对称"与 v2.1/v2.2"锚点/坐标反推"
+ *    都依赖对布局链的假设，实测均会失效。根因：`positionInParent` 的"父"
+ *    是布局链上最近的布局节点（这里是 padding 节点），`align` 放置整链的
+ *    信息完全丢失 → 基准位置错误 → 钳制区间错位。
+ *    现改为 **`boundsInWindow()` 绝对窗口矩形**钳制，与布局层级/对齐/边距
+ *    全部无关：
+ *
+ *    ```
+ *    dx ∈ [ 根.left − 元素.left , 根.right − 元素.right ]
+ *    dy ∈ [ 根.top − 元素.top , 根.bottom − 元素.bottom ]
+ *    ```
+ *
+ *    测量点挂在 `offset` 之前——offset 只移动其内部内容，测量点自身窗口
+ *    矩形不受拖动影响，读到的永远是静置位置。布局变化（旋转/分屏）后自动
+ *    重测并把已拖偏移重新钳回合法区间。
+ *  · ★ **钳制容器修正（v2.4）**：HUD 根容器被外部 `padding(bottom =
+ *    trackPanelBottomPadding)` 缩小（本意是抬高**默认位置**避让宿主底栏），
+ *    若以其为界，面板拖不到根底边以下、而那里地图仍可见（"拖到某处拖不动、
+ *    下方留大片空白"）。现钳制容器改用**组合根窗口矩形**（`findRootCoordinates`）
+ *    = 整张地图：默认位置不变，可拖范围 = 全图。
+ *
  * ## 布局
  *
  * ```
@@ -82,6 +110,7 @@ import kotlin.time.Duration.Companion.milliseconds
  * └────────────────────────────────────────┘
  * ```
  */
+
 @Composable
 fun TrackRecordingHud(
     state: TrackServiceState,
@@ -99,13 +128,28 @@ fun TrackRecordingHud(
         label = "hudPulseA",
     )
 
-    // ★ 拖放偏移（px 直存）。
+    // ★ 拖放偏移（px 直存，窗口坐标系）。
     // 注意：必须读写 MutableState 对象本身——pointerInput(Unit) 块不随重组重启，
     // 若闭包捕获"当时的值"会永远基于旧值累加（表现为抖动拖不走）。
     val pillDragState = remember { mutableStateOf(Offset.Zero) }
     val clusterDragState = remember { mutableStateOf(Offset.Zero) }
-    /** 根容器尺寸（px），拖动钳制用 */
+    /** 根容器尺寸（px），onSizeChanged 留存（其余逻辑已改走窗口矩形） */
     val rootSize = remember { mutableStateOf(IntSize.Zero) }
+    /** ★ v2.3：HUD 根容器/两元素的"静置"窗口矩形，boundsInWindow 实测 */
+    val rootWinRect = remember { mutableStateOf(Rect.Zero) }
+    /**
+     * ★ v2.4：钳制容器 = 组合根窗口矩形（整张地图区域）。
+     *
+     * HUD 根容器被外部 `padding(bottom = trackPanelBottomPadding)` 缩小——
+     * 该 padding 的本意只是把面板**默认位置**抬到宿主底栏上方，但前几版
+     * 把它当成了**可拖范围**，导致面板拖不到根容器底边以下、而那里地图
+     * 依然可见（"拖到某处就拖不动、下方留大片空白"）。
+     * 现改为以组合根（findRootCoordinates）为界：默认位置不变，可拖范围 =
+     * 整张地图。
+     */
+    val mapAreaWinRect = remember { mutableStateOf(Rect.Zero) }
+    val pillWinRect = remember { mutableStateOf(Rect.Zero) }
+    val clusterWinRect = remember { mutableStateOf(Rect.Zero) }
 
     /** ★ 长按结束：是否正在充能 + 充能进度 0..1 */
     var stopping by remember { mutableStateOf(false) }
@@ -117,25 +161,69 @@ fun TrackRecordingHud(
     var lastTapMs = 0L
 
     /**
-     * 可拖动，且**限制在屏幕范围内**（元素中心不出屏）。
-     * 顶部/底部居中元素的通用钳制：|offset| ≤ (父尺寸 − 元素尺寸) / 2。
+     * 把 [offsetState] 钳回 [elemRect] 相对 [rootRect] 的合法区间。
+     *
+     * 合法条件：元素窗口矩形（静置矩形 + 偏移）完整落在根容器窗口矩形内：
+     * ```
+     * dx ∈ [ root.left − elem.left , root.right − elem.right ]
+     * dy ∈ [ root.top − elem.top , root.bottom − elem.bottom ]
+     * ```
+     * 元素比根宽/高时退化为不越界的一侧（coerceAtLeast 保证区间合法）。
      */
-    fun Modifier.draggableAt(state: androidx.compose.runtime.MutableState<Offset>): Modifier =
+    fun clampOffset(
+        offsetState: androidx.compose.runtime.MutableState<Offset>,
+        elemRect: Rect,
+        rootRect: Rect,
+    ) {
+        if (rootRect.width <= 0f || rootRect.height <= 0f) return
+        if (elemRect.width <= 0f || elemRect.height <= 0f) return
+        val minX = rootRect.left - elemRect.left
+        val maxX = (rootRect.right - elemRect.right).coerceAtLeast(minX)
+        val minY = rootRect.top - elemRect.top
+        val maxY = (rootRect.bottom - elemRect.bottom).coerceAtLeast(minY)
+        offsetState.value = Offset(
+            offsetState.value.x.coerceIn(minX, maxX),
+            offsetState.value.y.coerceIn(minY, maxY),
+        )
+    }
+
+    /**
+     * 可拖动，且**元素窗口矩形（静置矩形 + 偏移）严格不越出根容器窗口矩形**。
+     *
+     * ★ v2.3：用 `boundsInWindow()` 绝对坐标，与布局链（align/padding 层级）
+     * 完全无关；测量点挂在 `offset` 之前，读到的永远是静置矩形；
+     * 每次重新布局（旋转/分屏）后自动重测并重新钳制当前偏移。
+     */
+    fun Modifier.draggableBounded(
+        offsetState: androidx.compose.runtime.MutableState<Offset>,
+        elemRectState: androidx.compose.runtime.MutableState<Rect>,
+    ): Modifier =
         this
-            .offset { IntOffset(state.value.x.roundToInt(), state.value.y.roundToInt()) }
+            // 必须挂在 offset 之前：测量点自身矩形不随拖动变化 = 静置矩形
+            .onGloballyPositioned { coords ->
+                elemRectState.value = coords.boundsInWindow()
+                // 布局变化后把已拖偏移重新钳回合法区间（防旋转后卡死界外）
+                clampOffset(offsetState, elemRectState.value, mapAreaWinRect.value)
+            }
+            .offset {
+                IntOffset(
+                    offsetState.value.x.roundToInt(),
+                    offsetState.value.y.roundToInt(),
+                )
+            }
             .pointerInput(Unit) {
                 detectDragGestures { change, drag ->
                     change.consume()
-                    val maxX = if (rootSize.value.width > 0)
-                        ((rootSize.value.width - size.width) / 2f).coerceAtLeast(0f)
-                    else Float.MAX_VALUE
-                    val maxY = if (rootSize.value.height > 0)
-                        ((rootSize.value.height - size.height) / 2f).coerceAtLeast(0f)
-                    else Float.MAX_VALUE
-                    val nv = state.value + drag
-                    state.value = Offset(
-                        nv.x.coerceIn(-maxX, maxX),
-                        nv.y.coerceIn(-maxY, maxY),
+                    clampOffset(
+                        offsetState,
+                        elemRect = elemRectState.value,
+                        rootRect = mapAreaWinRect.value,
+                    )
+                    offsetState.value += drag
+                    clampOffset(
+                        offsetState,
+                        elemRect = elemRectState.value,
+                        rootRect = mapAreaWinRect.value,
                     )
                 }
             }
@@ -146,14 +234,20 @@ fun TrackRecordingHud(
         modifier = Modifier
             .fillMaxSize()
             .then(modifier)
-            .onSizeChanged { rootSize.value = it },
+            .onSizeChanged { rootSize.value = it }
+            .onGloballyPositioned { coords ->
+                rootWinRect.value = coords.boundsInWindow()
+                // ★ 钳制容器 = 组合根（整张地图），而非被外部 padding 缩小的 HUD 根
+                mapAreaWinRect.value =
+                    coords.findRootCoordinates().boundsInWindow()
+            },
     ) {
         // =========================== 顶部状态胶囊（可拖动） ===========================
         Column(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .padding(top = 48.dp)
-                .draggableAt(pillDragState)
+                .draggableBounded(pillDragState, pillWinRect)
                 .clip(RoundedCornerShape(50))
                 .background(Color(0x99000000))
                 .padding(horizontal = 14.dp, vertical = 7.dp),
@@ -226,7 +320,7 @@ fun TrackRecordingHud(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = 14.dp)
-                .draggableAt(clusterDragState)
+                .draggableBounded(clusterDragState, clusterWinRect)
                 .clip(RoundedCornerShape(40.dp))
                 .background(Color(0x73000000))
                 .padding(horizontal = 14.dp, vertical = 10.dp),
