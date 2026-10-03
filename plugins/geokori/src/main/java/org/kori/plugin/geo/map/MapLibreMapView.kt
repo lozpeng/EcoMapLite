@@ -188,6 +188,11 @@ fun MapLibreMapView(
      */
     historySegments: List<List<TrackPoint>> = emptyList(),
 
+    /**
+     * 轨迹回放标记点：非 null 时地图显示亮青色回放标记（配合 [org.kori.plugin.geo.track.TrackPlaybackBar]）。
+     */
+    playbackPoint: TrackPoint? = null,
+
     // ★ 新增：记录面板回调。非 null 时启用内嵌记录面板。
     trackPanelCallbacks: TrackMapCallbacks? = null,
 ) {
@@ -622,6 +627,14 @@ fun MapLibreMapView(
         } else {
             LiveTrackLayer.updateHistory(style, historySegments)
         }
+    }
+
+    // =============================================================================================
+    // 轨迹回放标记
+    // =============================================================================================
+    LaunchedEffect(styleRef, playbackPoint) {
+        val style = styleRef ?: return@LaunchedEffect
+        LiveTrackLayer.updatePlayback(style, playbackPoint)
     }
 
     // =============================================================================================

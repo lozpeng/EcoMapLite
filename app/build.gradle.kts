@@ -108,7 +108,5 @@ dependencies {
     implementation(libs.maplibre.opengl)
     implementation(projects.core)
     implementation(project(":lib:lib-geokori"))
-
-
     implementation(projects.dependencies)
 }

@@ -76,6 +76,15 @@ dependencies {
     api(libs.koin.android)
     api(libs.koin.androidx.compose)
 
+    // ========== 相机多媒体等 ==========
+    api(libs.androidx.camera.video)
+    api(libs.androidx.camera.view)
+    api("androidx.camera:camera-core:${libs.versions.cameraVideo.get()}")
+    api("androidx.camera:camera-camera2:${libs.versions.cameraVideo.get()}")
+    api("androidx.camera:camera-lifecycle:${libs.versions.cameraVideo.get()}")
+
+    api("androidx.media3:media3-exoplayer:1.4.1")
+    api("androidx.media3:media3-ui:1.4.1")
     // ========== 其他常用库 ==========
     api(libs.androidx.foundation.android)
     api(libs.kotlin.reflect)

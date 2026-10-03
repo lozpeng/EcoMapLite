@@ -1,7 +1,14 @@
 package org.kori.plugin.geo.track
 
-import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -31,48 +38,34 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 /**
- * 轨迹记录面板（两行布局，含暂停 / 继续 / 历史入口）。
+ * 轨迹记录面板 —— 科技感/现代风设计版。
+ *
+ * ## 设计语言
+ *
+ *  · **深色玻璃拟态**：近黑蓝底色（#141A24，94% 不透明）+ 1dp 状态色描边 + 圆角
+ *  · **呼吸指示灯**：状态圆点无限呼吸动画（绿=记录中 / 琥珀=暂停 / 灰=空闲）
+ *  · **等宽数字**：时长/距离/点数用 Monospace 字体，仪表读数感
+ *  · **霓虹主按钮**：记录红 / 空闲青，44dp 圆形
  *
  * ## 布局
  *
  * ```
- * ┌────────────────────────────────────┐
- * │ ● 记录中                    [📋]    │  ← 状态行：标题/详情 + 历史按钮（右侧，永不被挤出屏幕）
- * │ 00:45:23 · 245 点 · 2.13 km        │
- * │ ┌──┐              [⏸] 📷 🎤 🎥    │  ← 按钮行：主按钮在左，其余靠右
- * │ │■ │                              │
- * │ └──┘                              │
- * └────────────────────────────────────┘
+ * ┌──────────────────────────────────────┐
+ * │ (●) 记录中                    [📋]    │  ← 呼吸灯 + 状态（weight）+ 历史
+ * │     00:45:23 · 245 点 · 2.13 km      │  ← 等宽数字
+ * │ ┌──┐                 [⏸] 📷 🎤 🎥  │  ← 主按钮 + 操作
+ * │ │■ │                                │
+ * │ └──┘                                │
+ * └──────────────────────────────────────┘
  * ```
  *
- * ## ★ 修复：历史按钮放状态行（不在按钮行）
- *
- * 旧版把 📋 放按钮行末尾：记录中时按钮行总宽约 332dp，超出 Card 限宽 300dp，
- * 被挤到屏幕右边缘外，点击无响应。状态行用 weight 文本 + 固定图标，任何状态下
- * 历史按钮都有确定的位置和可点区域。
- *
- * ## 状态显示
- *
- *  | 状态 | 主按钮 | 暂停按钮 | 状态行 | 媒体按钮 | 历史按钮 |
- *  |---|---|---|---|---|---|
- *  | 未记录 | ▶（主色） | 隐藏 | ○ 未记录 | 隐藏 | 显示 |
- *  | 记录中 | ■（红色=结束） | ⏸ 暂停 | ● 记录中 | 显示 | 显示 |
- *  | 暂停中 | ■（红色=结束） | ▶ 继续 | ‖ 已暂停 | 显示 | 显示 |
- *
- * ## 回调
- *
- * 所有交互通过 [TrackMapCallbacks] 传出。Composable 本身**无状态**。
- *
- *  · [TrackMapCallbacks.onToggle]：开始 / 结束
- *  · [TrackMapCallbacks.onPauseToggle]：暂停 / 继续
- *  · [TrackMapCallbacks.onOpenHistory]：历史轨迹浏览
- *
- * @param state 当前记录状态（时长、点数、距离、段数、暂停标志）
+ * @param state 当前记录状态
  * @param callbacks 所有交互回调
  * @param modifier 外部修饰符
  */
@@ -82,176 +75,152 @@ fun TrackRecordingPanel(
     callbacks: TrackMapCallbacks,
     modifier: Modifier = Modifier,
 ) {
-    // 主按钮颜色：记录中（含暂停）红色，未记录主色
-    val buttonColor by animateColorAsState(
-        targetValue = if (state.recording) {
-            Color(0xFFD32F2F) // Material Red 700
-        } else {
-            MaterialTheme.colorScheme.primary
-        },
-        label = "recordButtonColor",
+    // ---- 状态色（科技感三色）----
+    val accent: Color = when {
+        !state.recording -> Color(0xFF8B949E)   // 灰：空闲
+        state.paused -> Color(0xFFFFD600)       // 琥珀：暂停
+        else -> Color(0xFF00E676)               // 霓虹绿：记录中
+    }
+
+    // ---- 呼吸灯动画 ----
+    val pulse by rememberInfiniteTransition(label = "recPulse").animateFloat(
+        initialValue = 0.35f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse),
+        label = "recPulseAlpha",
     )
 
+    // 深色玻璃底 + 状态色描边
     Card(
-        // ★ 限制最大宽度，避免横向遮挡右下角的定位 FAB
-        modifier = modifier.widthIn(max = 300.dp),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface,
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
+        modifier = modifier.widthIn(max = 310.dp),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xF0141A24)),
+        border = BorderStroke(1.dp, accent.copy(alpha = 0.4f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             // =========================================================================
-            // 第一行：状态提示（weight 占满） + 历史按钮（右侧固定，任何状态可见）
+            // 状态行：呼吸灯 + 标题/等宽详情（weight） + 历史按钮
             // =========================================================================
             Row(verticalAlignment = Alignment.CenterVertically) {
+                // 呼吸指示灯
+                Box(
+                    modifier = Modifier
+                        .size(10.dp)
+                        .background(accent.copy(alpha = pulse), CircleShape),
+                )
+                Spacer(modifier = Modifier.size(8.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = when {
-                            !state.recording -> "○ 未记录"
-                            state.paused -> "‖ 已暂停"
-                            else -> "● 记录中"
+                            !state.recording -> "待机"
+                            state.paused -> "已暂停"
+                            else -> "记录中"
                         },
                         style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Medium,
-                        color = when {
-                            !state.recording ->
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            state.paused ->
-                                MaterialTheme.colorScheme.tertiary
-                            else ->
-                                Color(0xFFD32F2F)
-                        },
+                        fontWeight = FontWeight.SemiBold,
+                        color = accent,
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
                     )
                     Text(
                         text = when {
-                            !state.recording -> "点击 ▶ 开始记录"
+                            !state.recording -> "READY · 点击开始记录"
                             state.paused ->
-                                "已暂停 · ${state.points} 点 · ${"%.2f".format(state.distanceM / 1000)} km"
+                                "HOLD · ${state.points} PT · ${"%.2f".format(state.distanceM / 1000)} KM"
                             else -> buildRecordingSummary(state)
                         },
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface,
+                        fontFamily = FontFamily.Monospace,
+                        color = Color(0xFF8B949E),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-
-                // ★ 历史轨迹入口：放状态行，不受按钮行宽度/记录状态影响
-                MediaIconButton(
-                    onClick = callbacks.onOpenHistory,
-                    icon = Icons.Filled.List,
-                    contentDescription = "历史轨迹",
-                )
+                // 历史入口（状态行右侧，永不被挤出屏幕）
+                IconButton(onClick = callbacks.onOpenHistory) {
+                    Icon(
+                        imageVector = Icons.Filled.List,
+                        contentDescription = "历史轨迹",
+                        tint = Color(0xFF8B949E),
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
             }
 
             // =========================================================================
-            // 第二行：操作按钮（主按钮在左，其余靠右）
+            // 按钮行
             // =========================================================================
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                // === 主按钮：开始 / 结束 ===
+                // === 主按钮：开始 / 结束（霓虹色）===
                 FloatingActionButton(
                     onClick = callbacks.onToggle,
-                    containerColor = buttonColor,
+                    containerColor = when {
+                        state.paused -> Color(0xFFFFD600)
+                        state.recording -> Color(0xFFFF1744)
+                        else -> Color(0xFF00E5FF)
+                    },
                     contentColor = Color.White,
                     shape = CircleShape,
                     modifier = Modifier.size(44.dp),
                 ) {
                     Icon(
-                        imageVector = if (state.recording) {
-                            Icons.Filled.Stop
-                        } else {
-                            Icons.Filled.PlayArrow
-                        },
+                        imageVector = if (state.recording) Icons.Filled.Stop else Icons.Filled.PlayArrow,
                         contentDescription = if (state.recording) "结束记录" else "开始记录",
                         modifier = Modifier.size(22.dp),
                     )
                 }
 
-                // 弹性占位：把暂停/媒体按钮推到右侧
                 Spacer(modifier = Modifier.weight(1f))
 
-                // === 暂停 / 继续按钮（仅记录中显示）===
-                // 用 TextButton + 字符而非图标：material-icons-core 没有 Pause 图标，
-                // 引入 extended-icons 会显著增大插件体积。文字精简为单字符避免行溢出。
+                // === 暂停 / 继续 ===
                 if (state.recording) {
                     TextButton(onClick = callbacks.onPauseToggle) {
                         Text(
                             text = if (state.paused) "▶" else "⏸",
                             style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary,
-                            maxLines = 1,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            color = if (state.paused) Color(0xFF00E676) else Color(0xFFFFD600),
                         )
                     }
                 }
 
-                // === 媒体按钮（仅记录中显示，含暂停中——暂停时也可以拍照标注）===
+                // === 媒体按钮 ===
                 if (state.recording) {
-                    MediaIconButton(
-                        onClick = callbacks.onPhoto,
-                        icon = Icons.Filled.CameraAlt,
-                        contentDescription = "拍照",
-                    )
-                    MediaIconButton(
-                        onClick = callbacks.onAudio,
-                        icon = Icons.Filled.Mic,
-                        contentDescription = "录音",
-                    )
-                    MediaIconButton(
-                        onClick = callbacks.onVideo,
-                        icon = Icons.Filled.Videocam,
-                        contentDescription = "录像",
-                    )
+                    TechIconButton(callbacks.onPhoto, Icons.Filled.CameraAlt, "拍照")
+                    TechIconButton(callbacks.onAudio, Icons.Filled.Mic, "录音")
+                    TechIconButton(callbacks.onVideo, Icons.Filled.Videocam, "录像")
                 }
             }
         }
     }
 }
 
-/**
- * 记录状态摘要文本。
- *
- * 格式：`时长 · 点数 · 距离`
- * 例如：`00:45:23 · 245 点 · 2.13 km`
- */
+/** 等宽数字的状态摘要：`00:45:23 · 245 PT · 2.13 KM` */
 private fun buildRecordingSummary(state: TrackServiceState): String {
     val duration = formatDuration(state.elapsedMs)
     val distanceKm = "%.2f".format(state.distanceM / 1000)
-    return "$duration · ${state.points} 点 · $distanceKm km"
+    return "$duration · ${state.points} PT · $distanceKm KM"
 }
 
-/**
- * 时长格式化。
- *
- * · < 1 小时：`MM:SS`
- * · ≥ 1 小时：`HH:MM:SS`
- */
 private fun formatDuration(ms: Long): String {
     val totalSec = ms / 1000
     val h = totalSec / 3600
     val m = (totalSec % 3600) / 60
     val s = totalSec % 60
-    return if (h > 0) {
-        "%d:%02d:%02d".format(h, m, s)
-    } else {
-        "%02d:%02d".format(m, s)
-    }
+    return if (h > 0) "%d:%02d:%02d".format(h, m, s)
+    else "%02d:%02d".format(m, s)
 }
 
-/**
- * 媒体操作小图标按钮（拍照 / 录音 / 录像 / 历史）。
- */
+/** 暗色圆形图标按钮（媒体操作）。 */
 @Composable
-private fun MediaIconButton(
+private fun TechIconButton(
     onClick: () -> Unit,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     contentDescription: String,
@@ -259,13 +228,14 @@ private fun MediaIconButton(
     IconButton(
         onClick = onClick,
         colors = IconButtonDefaults.iconButtonColors(
-            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            containerColor = Color(0xFF21262F),
+            contentColor = Color(0xFFC9D1D9),
         ),
     ) {
         Icon(
             imageVector = icon,
             contentDescription = contentDescription,
-            modifier = Modifier.size(22.dp),
+            modifier = Modifier.size(20.dp),
         )
     }
 }

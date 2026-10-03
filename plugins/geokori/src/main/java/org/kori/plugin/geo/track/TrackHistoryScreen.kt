@@ -60,6 +60,8 @@ import java.util.Locale
 fun TrackHistoryScreen(
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
+    /** ★ 回放回调：由调用方启动回放控制条（见 [TrackPlaybackBar]）。 */
+    onPlay: (TrackSession) -> Unit = {},
 ) {
     val context = LocalContext.current
     val state by TrackRecordingEngine.state.collectAsState()
@@ -131,6 +133,10 @@ fun TrackHistoryScreen(
                             onShow = {
                                 TrackRecordingEngine.loadHistoryOnMap(listOf(session))
                                 Toast.makeText(context, "已加载到地图", Toast.LENGTH_SHORT).show()
+                                onClose()
+                            },
+                            onPlay = {
+                                onPlay(session)
                                 onClose()
                             },
                             onExport = { exportTarget = session },
@@ -209,6 +215,7 @@ fun TrackHistoryScreen(
 private fun SessionRow(
     session: TrackSession,
     onShow: () -> Unit,
+    onPlay: () -> Unit,
     onExport: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -239,6 +246,7 @@ private fun SessionRow(
             }
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 TextButton(onClick = onShow) { Text("显示") }
+                TextButton(onClick = onPlay) { Text("回放") }
                 TextButton(onClick = onExport) { Text("导出") }
                 TextButton(onClick = onDelete) { Text("删除", color = MaterialTheme.colorScheme.error) }
             }

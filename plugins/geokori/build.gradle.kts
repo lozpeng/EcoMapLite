@@ -62,16 +62,16 @@ dependencies {
 
     // ---- CameraX（视频录制）----
     // :combo:dependencies 只暴露了 maplibre.opengl，未暴露 CameraX，需要插件自带。
-    implementation(libs.androidx.camera.video)
-    implementation(libs.androidx.camera.view)
-    implementation("androidx.camera:camera-core:${libs.versions.cameraVideo.get()}")
-    implementation("androidx.camera:camera-camera2:${libs.versions.cameraVideo.get()}")
-    implementation("androidx.camera:camera-lifecycle:${libs.versions.cameraVideo.get()}")
+    compileOnly(libs.androidx.camera.video)
+    compileOnly(libs.androidx.camera.view)
+    compileOnly("androidx.camera:camera-core:${libs.versions.cameraVideo.get()}")
+    compileOnly("androidx.camera:camera-camera2:${libs.versions.cameraVideo.get()}")
+    compileOnly("androidx.camera:camera-lifecycle:${libs.versions.cameraVideo.get()}")
 
     // ---- Media3（音视频回放）----
     // 用于 MediaViewer 播放录制的 m4a / mp4。
-    implementation("androidx.media3:media3-exoplayer:1.4.1")
-    implementation("androidx.media3:media3-ui:1.4.1")
+    compileOnly("androidx.media3:media3-exoplayer:1.4.1")
+    compileOnly("androidx.media3:media3-ui:1.4.1")
 
     // =============================================================================================
     // 测试

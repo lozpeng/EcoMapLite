@@ -67,10 +67,15 @@ object LiveTrackLayer {
     const val SRC_HISTORY = "vela-track-history"
     const val LAYER_HISTORY = "vela-track-history-layer"
 
+    // ---- 轨迹回放标记 ----
+    const val SRC_PLAYBACK = "vela-track-playback"
+    const val LAYER_PLAYBACK = "vela-track-playback-layer"
+
     // ---- 颜色 ----
     private const val COLOR_RAW = "#FF5252"        // 原始：红
     private const val COLOR_SMOOTH = "#1A73E8"     // 平滑：蓝
-    private const val COLOR_HISTORY = "#9AA0A6"        // 历史轨迹：灰
+    private const val COLOR_HISTORY = "#FF9100"        // 历史轨迹：亮橙（醒目）
+    private const val COLOR_PLAYBACK = "#00E5FF"       // 回放标记：亮青
     private const val COLOR_MEDIA_DEFAULT = "#5F6368"  // 媒体默认：灰
     private const val COLOR_MEDIA_PHOTO = "#FF5252"    // 照片：红
     private const val COLOR_MEDIA_VIDEO = "#9334E6"    // 视频：紫
@@ -90,6 +95,38 @@ object LiveTrackLayer {
         ensureSmoothTrackLayer(style)
         ensureMediaLayer(style)
         ensureHistoryLayer(style)
+        ensurePlaybackLayer(style)
+    }
+
+    // ---- 回放标记层（亮青圆点 + 白色描边，置顶）----
+    private fun ensurePlaybackLayer(style: Style) {
+        if (style.getSource(SRC_PLAYBACK) == null) {
+            style.addSource(GeoJsonSource(SRC_PLAYBACK))
+        }
+        if (style.getLayer(LAYER_PLAYBACK) == null) {
+            style.addLayer(
+                CircleLayer(LAYER_PLAYBACK, SRC_PLAYBACK).withProperties(
+                    PropertyFactory.circleRadius(9f),
+                    PropertyFactory.circleColor(COLOR_PLAYBACK),
+                    PropertyFactory.circleStrokeWidth(2f),
+                    PropertyFactory.circleStrokeColor("#FFFFFF"),
+                ),
+            )
+        }
+    }
+
+    /** 更新回放标记位置；[point] 为 null 时隐藏。 */
+    fun updatePlayback(style: Style, point: TrackPoint?) {
+        val src = style.getSourceAs<GeoJsonSource>(SRC_PLAYBACK) ?: return
+        src.setGeoJson(
+            if (point == null) {
+                FeatureCollection.fromFeatures(emptyList<Feature>())
+            } else {
+                FeatureCollection.fromFeature(
+                    Feature.fromGeometry(Point.fromLngLat(point.lng, point.lat)),
+                )
+            },
+        )
     }
 
     // ---- 历史轨迹层（多段灰线）----
@@ -101,7 +138,7 @@ object LiveTrackLayer {
             style.addLayer(
                 LineLayer(LAYER_HISTORY, SRC_HISTORY).withProperties(
                     PropertyFactory.lineColor(COLOR_HISTORY),
-                    PropertyFactory.lineWidth(4f),
+                    PropertyFactory.lineWidth(5f),
                     PropertyFactory.lineCap("round"),
                     PropertyFactory.lineJoin("round"),
                     PropertyFactory.lineOpacity(0.9f),
@@ -184,9 +221,11 @@ object LiveTrackLayer {
      * 地图销毁时 MapView 会自动清理。
      */
     fun removeLayers(style: Style) {
+        runCatching { style.removeLayer(LAYER_PLAYBACK) }
         runCatching { style.removeLayer(LAYER_MEDIA) }
         runCatching { style.removeLayer(LAYER_SMOOTH) }
         runCatching { style.removeLayer(LAYER_RAW) }
+        runCatching { style.removeSource(SRC_PLAYBACK) }
         runCatching { style.removeSource(SRC_MEDIA) }
         runCatching { style.removeSource(SRC_SMOOTH) }
         runCatching { style.removeSource(SRC_RAW) }
@@ -248,6 +287,7 @@ object LiveTrackLayer {
         clearTrack(style)
         clearMedia(style)
         clearHistory(style)
+        updatePlayback(style, null)
     }
 
     /**
