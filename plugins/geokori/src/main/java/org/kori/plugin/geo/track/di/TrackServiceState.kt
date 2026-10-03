@@ -1,4 +1,4 @@
-package org.kori.plugin.geo.track
+package org.kori.plugin.geo.track.di
 
 /** 面板状态。与 TrackRecordingState 解耦，避免 UI 依赖记录引擎。 */
 data class TrackServiceState(

@@ -53,7 +53,7 @@ import com.combo.core.component.activity.BasePluginActivity
 import com.combo.core.utils.startPluginActivity
 import kotlinx.coroutines.delay
 import org.json.JSONObject
-import org.kori.plugin.geo.track.TrackMediaRecord
+import org.kori.plugin.geo.track.di.TrackMediaRecord
 import org.kori.plugin.geo.track.TrackRecordingEngine
 import java.io.File
 import java.text.SimpleDateFormat

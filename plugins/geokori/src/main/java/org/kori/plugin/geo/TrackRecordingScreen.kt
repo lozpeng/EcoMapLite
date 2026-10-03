@@ -21,14 +21,13 @@ import org.kori.plugin.geo.map.MapLibreMapView
 import org.kori.plugin.geo.service.TrackMediaCaptureActivity
 import org.kori.plugin.geo.service.VideoCaptureActivity
 import org.kori.plugin.geo.track.RecordingPermissions
-import org.kori.plugin.geo.track.TrackHistoryScreen
 import org.kori.plugin.geo.track.TrackPlaybackScreen
-import org.kori.plugin.geo.track.TrackPoint
-import org.kori.plugin.geo.track.TrackSession
-import org.kori.plugin.geo.track.TrackTimelineScreen
 import org.kori.plugin.geo.track.TrackMapCallbacks
 import org.kori.plugin.geo.track.TrackRecordingEngine
-import org.kori.plugin.geo.track.TrackRecordingViewModel
+import org.kori.plugin.geo.track.di.TrackRecordingViewModel
+import org.kori.plugin.geo.track.di.TrackSession
+import org.kori.plugin.geo.track.ui.TrackHistoryScreen
+import org.kori.plugin.geo.track.ui.TrackTimelineScreen
 
 /**
  * 轨迹记录屏幕（薄层）。

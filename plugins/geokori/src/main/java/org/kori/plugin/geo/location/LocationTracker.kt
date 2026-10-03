@@ -20,7 +20,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import org.kori.plugin.geo.track.SegmentConfig
+import org.kori.plugin.geo.track.di.SegmentConfig
 import org.kori.plugin.geo.track.SegmentedTrackRecorder
 import org.kori.plugin.geo.track.SensorSampler
 import java.io.File

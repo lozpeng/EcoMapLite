@@ -1,4 +1,4 @@
-package org.kori.plugin.geo.track
+package org.kori.plugin.geo.track.di
 
 import org.kori.plugin.geo.math.GeoMath
 

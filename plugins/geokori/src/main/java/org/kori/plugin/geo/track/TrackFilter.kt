@@ -1,6 +1,7 @@
 package org.kori.plugin.geo.track
 
 import org.kori.plugin.geo.math.GeoMath
+import org.kori.plugin.geo.track.di.TrackPoint
 import java.util.concurrent.atomic.AtomicInteger
 
 /**

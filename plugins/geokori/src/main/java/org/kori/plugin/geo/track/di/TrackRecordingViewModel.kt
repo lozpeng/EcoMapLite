@@ -1,8 +1,9 @@
-package org.kori.plugin.geo.track
+package org.kori.plugin.geo.track.di
 
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import kotlinx.coroutines.flow.StateFlow
+import org.kori.plugin.geo.track.TrackRecordingEngine
 
 /**
  * 轨迹记录 ViewModel。

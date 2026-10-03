@@ -1,6 +1,8 @@
 package org.kori.plugin.geo.track
 
 import org.kori.plugin.geo.math.GeoMath
+import org.kori.plugin.geo.track.di.TrackPoint
+import org.kori.plugin.geo.track.di.TrackSession
 import java.io.File
 
 /**

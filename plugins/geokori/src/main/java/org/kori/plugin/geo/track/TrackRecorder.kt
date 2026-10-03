@@ -1,6 +1,8 @@
 package org.kori.plugin.geo.track
 
 import android.location.Location
+import org.kori.plugin.geo.track.di.TrackPoint
+import org.kori.plugin.geo.track.di.TrackSimplifier
 import java.io.File
 
 /**

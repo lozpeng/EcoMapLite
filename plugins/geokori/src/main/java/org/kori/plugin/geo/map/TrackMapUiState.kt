@@ -1,8 +1,8 @@
 package org.kori.plugin.geo.map
 
-import org.kori.plugin.geo.track.TrackMediaRecord
-import org.kori.plugin.geo.track.TrackPoint
-import org.kori.plugin.geo.track.TrackSession
+import org.kori.plugin.geo.track.di.TrackMediaRecord
+import org.kori.plugin.geo.track.di.TrackPoint
+import org.kori.plugin.geo.track.di.TrackSession
 
 data class TrackMapUiState(
     val recording: Boolean = false,

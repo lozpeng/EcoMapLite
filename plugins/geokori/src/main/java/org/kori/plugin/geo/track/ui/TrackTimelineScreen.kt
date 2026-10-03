@@ -1,6 +1,5 @@
-package org.kori.plugin.geo.track
+package org.kori.plugin.geo.track.ui
 
-import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -17,7 +16,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -59,6 +57,14 @@ import coil3.compose.AsyncImage
 import org.kori.plugin.geo.math.GeoMath
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.kori.plugin.geo.track.TrackEvent
+import org.kori.plugin.geo.track.TrackEventType
+import org.kori.plugin.geo.track.TrackExporter
+import org.kori.plugin.geo.track.TrackMerger
+import org.kori.plugin.geo.track.TrackShare
+import org.kori.plugin.geo.track.di.TrackMediaRecord
+import org.kori.plugin.geo.track.di.TrackPoint
+import org.kori.plugin.geo.track.di.TrackSession
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date

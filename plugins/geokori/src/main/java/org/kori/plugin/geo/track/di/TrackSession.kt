@@ -1,6 +1,10 @@
-package org.kori.plugin.geo.track
+package org.kori.plugin.geo.track.di
 
+import org.kori.plugin.geo.track.TrackEvent
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * 一个轨迹会话。
@@ -8,7 +12,7 @@ import java.io.File
  * ## 概念
  *
  * 一次"开始记录 → 停止记录"产生一个 session。session 里包含：
- *  · **多个 segment**：按 [SegmentConfig] 自动切分的段，每段有 raw + smooth 两个文件
+ *  · **多个 segment**：按 [org.kori.plugin.geo.track.SegmentConfig] 自动切分的段，每段有 raw + smooth 两个文件
  *  · **多个 media**：用户拍照 / 录音 / 录像的附件
  *  · **统计信息**：总点数、总距离、时长、段数等
  *
@@ -35,7 +39,7 @@ import java.io.File
  *  · [startSession] 时创建目录 + 写初始 JSON
  *  · 记录过程中每切一段就 close 一段（写文件）
  *  · [endSession] 时写最终 JSON（含所有统计）
- *  · 之后只读——通过 [TrackSessionStore.readSession] 从磁盘加载
+ *  · 之后只读——通过 [org.kori.plugin.geo.track.TrackSessionStore.readSession] 从磁盘加载
  */
 data class TrackSession(
     // =============================================================================================
@@ -127,7 +131,7 @@ data class TrackSession(
     val tags: List<String> = emptyList(),
 
     /**
-     * 记录过程中的事件（暂停/继续等），由 [SegmentedTrackRecorder.recordEvent] 写入。
+     * 记录过程中的事件（暂停/继续等），由 [org.kori.plugin.geo.track.SegmentedTrackRecorder.recordEvent] 写入。
      *
      * v2 及更早的会话无此字段（空列表）。
      */
@@ -346,8 +350,8 @@ data class TrackSession(
          * @param atMs     时间戳（默认当前时间）
          */
         fun generateId(nameHint: String? = null, atMs: Long = System.currentTimeMillis()): String {
-            val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US)
-                .format(java.util.Date(atMs))
+            val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US)
+                .format(Date(atMs))
             val safe = nameHint
                 ?.replace(Regex("[^A-Za-z0-9_-]"), "_")
                 ?.take(24)

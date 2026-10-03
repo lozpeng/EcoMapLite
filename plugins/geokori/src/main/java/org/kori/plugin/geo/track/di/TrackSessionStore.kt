@@ -1,6 +1,8 @@
-package org.kori.plugin.geo.track
+package org.kori.plugin.geo.track.di
 
 import org.json.JSONObject
+import org.kori.plugin.geo.track.TrackEvent
+import org.kori.plugin.geo.track.TrackEventType
 import java.io.File
 
 /**
@@ -64,7 +66,7 @@ object TrackSessionStore {
     /**
      * 从段文件头部的 `# points N` 注释读取点数。
      *
-     * 比读取整个 CSV 便宜得多——段文件由 [TrackStore.write] 生成，
+     * 比读取整个 CSV 便宜得多——段文件由 [org.kori.plugin.geo.track.TrackStore.write] 生成，
      * 格式固定：
      * ```
      * # vela-track v1
@@ -90,7 +92,7 @@ object TrackSessionStore {
     }
 
     /** 解析 session.json 的 events 数组（v2 及更早无此字段 → 空列表）。 */
-    private fun readEvents(json: org.json.JSONObject): List<TrackEvent> =
+    private fun readEvents(json: JSONObject): List<TrackEvent> =
         json.optJSONArray("events")?.let { arr ->
             (0 until arr.length()).mapNotNull { i ->
                 runCatching {

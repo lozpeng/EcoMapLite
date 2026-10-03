@@ -3,6 +3,7 @@ package org.kori.plugin.geo.track
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import org.kori.plugin.geo.track.di.TrackPoint
 import java.io.File
 
 /**

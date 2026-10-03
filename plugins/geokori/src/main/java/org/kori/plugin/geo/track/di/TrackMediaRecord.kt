@@ -1,4 +1,8 @@
-package org.kori.plugin.geo.track
+package org.kori.plugin.geo.track.di
+
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * 记录过程中的媒体附件。
@@ -12,7 +16,7 @@ package org.kori.plugin.geo.track
  * ## 时间与定位
  *
  * [timestampMs] / [lat] / [lng] 记录的是**拍摄/录音那一刻**的时间与位置。
- * 如果那一刻拿不到 GPS（如室内），退化为 [TrackRecordingEngine.lastKnownLocation]。
+ * 如果那一刻拿不到 GPS（如室内），退化为 [org.kori.plugin.geo.track.TrackRecordingEngine.lastKnownLocation]。
  *
  * ## 类型
  *
@@ -108,8 +112,8 @@ data class TrackMediaRecord(
                 Type.VIDEO -> "video"
                 Type.AUDIO -> "audio"
             }
-            val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US)
-                .format(java.util.Date(timestampMs))
+            val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US)
+                .format(Date(timestampMs))
             return "$prefix-$stamp"
         }
 
