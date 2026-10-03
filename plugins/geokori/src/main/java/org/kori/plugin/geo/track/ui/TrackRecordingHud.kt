@@ -30,6 +30,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -50,12 +51,15 @@ import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.findRootCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import kotlinx.coroutines.launch
 import org.kori.plugin.geo.track.TrackMapCallbacks
 import org.kori.plugin.geo.track.di.TrackServiceState
@@ -96,6 +100,10 @@ import kotlin.time.Duration.Companion.milliseconds
  *    若以其为界，面板拖不到根底边以下、而那里地图仍可见（"拖到某处拖不动、
  *    下方留大片空白"）。现钳制容器改用**组合根窗口矩形**（`findRootCoordinates`）
  *    = 整张地图：默认位置不变，可拖范围 = 全图。
+ *  · ★ **状态栏手势区避让（v2.5）**：胶囊拖到屏幕顶后，下拉起点落入状态栏
+ *    系统手势区，触摸被 SystemUI 截走拉通知栏，胶囊"拉不出来"。现钳制容器
+ *    顶部预留**实测状态栏高度**（WindowInsets，非写死 dp），胶囊永不进入
+ *    系统手势拦截区；insets 变化（旋转/沉浸式）实时监听并主动重钳。
  *
  * ## 布局
  *
@@ -135,6 +143,14 @@ fun TrackRecordingHud(
     val clusterDragState = remember { mutableStateOf(Offset.Zero) }
     /** 根容器尺寸（px），onSizeChanged 留存（其余逻辑已改走窗口矩形） */
     val rootSize = remember { mutableStateOf(IntSize.Zero) }
+
+    val view = LocalView.current
+    /**
+     * ★ v2.5：状态栏高度（px）。胶囊顶部钳制时预留——防止胶囊被拖进状态栏
+     * 的系统手势区（那里下拉会被 SystemUI 截走拉通知栏，胶囊"拉不出来"）。
+     * 用 WindowInsets 实测，不写死 dp。
+     */
+    val statusBarInsetPx = remember { mutableFloatStateOf(0f) }
     /** ★ v2.3：HUD 根容器/两元素的"静置"窗口矩形，boundsInWindow 实测 */
     val rootWinRect = remember { mutableStateOf(Rect.Zero) }
     /**
@@ -179,12 +195,29 @@ fun TrackRecordingHud(
         if (elemRect.width <= 0f || elemRect.height <= 0f) return
         val minX = rootRect.left - elemRect.left
         val maxX = (rootRect.right - elemRect.right).coerceAtLeast(minX)
-        val minY = rootRect.top - elemRect.top
+        // ★ 顶部预留状态栏高度：胶囊/按钮簇都不进入系统手势拦截区
+        val minY = rootRect.top + statusBarInsetPx.floatValue - elemRect.top
         val maxY = (rootRect.bottom - elemRect.bottom).coerceAtLeast(minY)
         offsetState.value = Offset(
             offsetState.value.x.coerceIn(minX, maxX),
             offsetState.value.y.coerceIn(minY, maxY),
         )
+    }
+
+    // ★ 监听系统栏 insets（旋转、沉浸式切换、分屏都会变），变化时更新顶部预留
+    //    并主动重钳已拖偏移（insets 变化不触发重组/重布局，不重钳会卡在界外）
+    DisposableEffect(view) {
+        ViewCompat.setOnApplyWindowInsetsListener(view) { _, insets ->
+            statusBarInsetPx.floatValue =
+                insets.getInsets(WindowInsetsCompat.Type.statusBars()).top.toFloat()
+            clampOffset(pillDragState, pillWinRect.value, mapAreaWinRect.value)
+            clampOffset(clusterDragState, clusterWinRect.value, mapAreaWinRect.value)
+            insets
+        }
+        ViewCompat.requestApplyInsets(view)
+        onDispose {
+            ViewCompat.setOnApplyWindowInsetsListener(view, null)
+        }
     }
 
     /**
@@ -240,6 +273,11 @@ fun TrackRecordingHud(
                 // ★ 钳制容器 = 组合根（整张地图），而非被外部 padding 缩小的 HUD 根
                 mapAreaWinRect.value =
                     coords.findRootCoordinates().boundsInWindow()
+                // 兜底读一次状态栏高度（listener 未触发时）
+                ViewCompat.getRootWindowInsets(view)?.let { wic ->
+                    statusBarInsetPx.floatValue =
+                        wic.getInsets(WindowInsetsCompat.Type.statusBars()).top.toFloat()
+                }
             },
     ) {
         // =========================== 顶部状态胶囊（可拖动） ===========================
