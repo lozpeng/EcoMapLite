@@ -1045,13 +1045,9 @@ private fun RecordingPanelOverlay(
     modifier: Modifier = Modifier,
 ) {
     val state by TrackRecordingEngine.state.collectAsState()
-
-    // ★ 修复：面板在所有状态都渲染（含"未记录"）。
-    // 原来 if (!state.recording) return 导致开始按钮永远看不到——
-    // 面板只在记录中才出现，而开始按钮恰恰只在未记录时才需要。
-
-
-    // ★ 沉浸式 HUD（与地图融合的玻璃拟态悬浮界面，替代卡片面板）
+    // ★ 默认不显示 HUD；收到开启录制命令（recording=true）后才出现
+    if (!state.recording) return
+    // ★ 沉浸式 HUD（与地图融合的玻璃拟态悬浮界面）
     TrackRecordingHud(
         state = TrackServiceState(
             recording = state.recording,
@@ -1066,6 +1062,7 @@ private fun RecordingPanelOverlay(
         ),
         callbacks = callbacks,
         modifier = modifier,
+        showToggleButton = false,   // ★ HUD 内不显示结束按钮，结束走宿主 PUBLISH
     )
 }
 

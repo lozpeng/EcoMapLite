@@ -7,13 +7,13 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -37,12 +37,12 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -52,78 +52,51 @@ import androidx.compose.ui.layout.findRootCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.unit.IntSize
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
-import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
+import org.cwcc.open.geokori.ui.gesture.stopRecordGuardGesture
 import org.kori.plugin.geo.track.TrackMapCallbacks
 import org.kori.plugin.geo.track.di.TrackServiceState
-import kotlin.math.roundToInt
-import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * 沉浸式轨迹记录 HUD v2 —— 与地图融合的半透明悬浮界面。
  *
- * ## 修复/增强（相对 v1）
+ * ## 本次变更
  *
- *  · ★ **布局修复**：根 Box 撑满全屏（v1 高度包裹内容，导致顶部胶囊被压到
- *    底部按钮区）。顶部胶囊真正悬浮在地图顶部
- *  · ★ **顶部统计增强**：录制中显示两行——`REC 00:15  0.00 KM  1 PT` +
- *    当前速度 / 当前配速（等宽数字，回放 HUD 同款风格）
- *  · ★ **手动拖放**：顶部胶囊与底部按钮簇均可手指拖动 reposition，
- *    松手即停（不持久化，重进恢复默认）
- *
- * ## 修复（v2.3 + v2.4）
- *
- *  · ★ **拖动边界修复（v2.3）**：v2"居中对称"与 v2.1/v2.2"锚点/坐标反推"
- *    都依赖对布局链的假设，实测均会失效。根因：`positionInParent` 的"父"
- *    是布局链上最近的布局节点（这里是 padding 节点），`align` 放置整链的
- *    信息完全丢失 → 基准位置错误 → 钳制区间错位。
- *    现改为 **`boundsInWindow()` 绝对窗口矩形**钳制，与布局层级/对齐/边距
- *    全部无关：
- *
- *    ```
- *    dx ∈ [ 根.left − 元素.left , 根.right − 元素.right ]
- *    dy ∈ [ 根.top − 元素.top , 根.bottom − 元素.bottom ]
- *    ```
- *
- *    测量点挂在 `offset` 之前——offset 只移动其内部内容，测量点自身窗口
- *    矩形不受拖动影响，读到的永远是静置位置。布局变化（旋转/分屏）后自动
- *    重测并把已拖偏移重新钳回合法区间。
- *  · ★ **钳制容器修正（v2.4）**：HUD 根容器被外部 `padding(bottom =
- *    trackPanelBottomPadding)` 缩小（本意是抬高**默认位置**避让宿主底栏），
- *    若以其为界，面板拖不到根底边以下、而那里地图仍可见（"拖到某处拖不动、
- *    下方留大片空白"）。现钳制容器改用**组合根窗口矩形**（`findRootCoordinates`）
- *    = 整张地图：默认位置不变，可拖范围 = 全图。
- *  · ★ **状态栏手势区避让（v2.5）**：胶囊拖到屏幕顶后，下拉起点落入状态栏
- *    系统手势区，触摸被 SystemUI 截走拉通知栏，胶囊"拉不出来"。现钳制容器
- *    顶部预留**实测状态栏高度**（WindowInsets，非写死 dp），胶囊永不进入
- *    系统手势拦截区；insets 变化（旋转/沉浸式）实时监听并主动重钳。
+ *  · ★ **showToggleButton 参数**：开始/结束主按钮可整体隐藏。
+ *    宿主（home 插件）把结束交互迁移到自己的 PUBLISH 按钮后，
+ *    HUD 内不再显示结束按钮，但暂停 / 媒体 / 历史等功能保持完整
+ *  · ★ **手势逻辑复用**：长按 5 秒充能 / 4 连击的防误触手势改为
+ *    [stopRecordGuardGesture]（ui-geokori 公共 Modifier），
+ *    与宿主 PUBLISH 按钮的交互完全一致
  *
  * ## 布局
  *
- * ```
+ * ```text
  * ┌────────────────────────────────────────┐
  * │   (● REC 00:12:34  1.23 KM  245 PT)    │  ← 顶部胶囊（可拖动）
  * │      12.4 km/h · 配速 4'50"            │
  * │                                        │
  * │              地 图 区 域                │
  * │                                        │
- * │      ⏺ ●REC  ⏸ 📷 🎤 🎥  📋          │  ← 底部簇（可拖动）
+ * │         ⏸ 📷 🎤 🎥  📋               │  ← 底部簇（可拖动）
  * └────────────────────────────────────────┘
  * ```
  */
-
 @Composable
 fun TrackRecordingHud(
     state: TrackServiceState,
     callbacks: TrackMapCallbacks,
     modifier: Modifier = Modifier,
+    /** false 时隐藏开始/结束主按钮（结束操作由宿主按钮承担），其余功能完整保留 */
+    showToggleButton: Boolean = true,
 ) {
     val accent: Color = when {
         !state.recording -> Color(0xFF8B949E)
@@ -136,33 +109,14 @@ fun TrackRecordingHud(
         label = "hudPulseA",
     )
 
-    // ★ 拖放偏移（px 直存，窗口坐标系）。
-    // 注意：必须读写 MutableState 对象本身——pointerInput(Unit) 块不随重组重启，
-    // 若闭包捕获"当时的值"会永远基于旧值累加（表现为抖动拖不走）。
+    // ★ 拖放偏移（px 直存，窗口坐标系）
     val pillDragState = remember { mutableStateOf(Offset.Zero) }
     val clusterDragState = remember { mutableStateOf(Offset.Zero) }
-    /** 根容器尺寸（px），onSizeChanged 留存（其余逻辑已改走窗口矩形） */
     val rootSize = remember { mutableStateOf(IntSize.Zero) }
 
     val view = LocalView.current
-    /**
-     * ★ v2.5：状态栏高度（px）。胶囊顶部钳制时预留——防止胶囊被拖进状态栏
-     * 的系统手势区（那里下拉会被 SystemUI 截走拉通知栏，胶囊"拉不出来"）。
-     * 用 WindowInsets 实测，不写死 dp。
-     */
     val statusBarInsetPx = remember { mutableFloatStateOf(0f) }
-    /** ★ v2.3：HUD 根容器/两元素的"静置"窗口矩形，boundsInWindow 实测 */
     val rootWinRect = remember { mutableStateOf(Rect.Zero) }
-    /**
-     * ★ v2.4：钳制容器 = 组合根窗口矩形（整张地图区域）。
-     *
-     * HUD 根容器被外部 `padding(bottom = trackPanelBottomPadding)` 缩小——
-     * 该 padding 的本意只是把面板**默认位置**抬到宿主底栏上方，但前几版
-     * 把它当成了**可拖范围**，导致面板拖不到根容器底边以下、而那里地图
-     * 依然可见（"拖到某处就拖不动、下方留大片空白"）。
-     * 现改为以组合根（findRootCoordinates）为界：默认位置不变，可拖范围 =
-     * 整张地图。
-     */
     val mapAreaWinRect = remember { mutableStateOf(Rect.Zero) }
     val pillWinRect = remember { mutableStateOf(Rect.Zero) }
     val clusterWinRect = remember { mutableStateOf(Rect.Zero) }
@@ -173,19 +127,7 @@ fun TrackRecordingHud(
 
     /** ★ 连击结束：还需点击次数（0 = 不显示提示） */
     var hintTaps by remember { mutableIntStateOf(0) }
-    var tapCount = 0
-    var lastTapMs = 0L
 
-    /**
-     * 把 [offsetState] 钳回 [elemRect] 相对 [rootRect] 的合法区间。
-     *
-     * 合法条件：元素窗口矩形（静置矩形 + 偏移）完整落在根容器窗口矩形内：
-     * ```
-     * dx ∈ [ root.left − elem.left , root.right − elem.right ]
-     * dy ∈ [ root.top − elem.top , root.bottom − elem.bottom ]
-     * ```
-     * 元素比根宽/高时退化为不越界的一侧（coerceAtLeast 保证区间合法）。
-     */
     fun clampOffset(
         offsetState: androidx.compose.runtime.MutableState<Offset>,
         elemRect: Rect,
@@ -195,7 +137,6 @@ fun TrackRecordingHud(
         if (elemRect.width <= 0f || elemRect.height <= 0f) return
         val minX = rootRect.left - elemRect.left
         val maxX = (rootRect.right - elemRect.right).coerceAtLeast(minX)
-        // ★ 顶部预留状态栏高度：胶囊/按钮簇都不进入系统手势拦截区
         val minY = rootRect.top + statusBarInsetPx.floatValue - elemRect.top
         val maxY = (rootRect.bottom - elemRect.bottom).coerceAtLeast(minY)
         offsetState.value = Offset(
@@ -204,8 +145,6 @@ fun TrackRecordingHud(
         )
     }
 
-    // ★ 监听系统栏 insets（旋转、沉浸式切换、分屏都会变），变化时更新顶部预留
-    //    并主动重钳已拖偏移（insets 变化不触发重组/重布局，不重钳会卡在界外）
     DisposableEffect(view) {
         ViewCompat.setOnApplyWindowInsetsListener(view) { _, insets ->
             statusBarInsetPx.floatValue =
@@ -220,22 +159,13 @@ fun TrackRecordingHud(
         }
     }
 
-    /**
-     * 可拖动，且**元素窗口矩形（静置矩形 + 偏移）严格不越出根容器窗口矩形**。
-     *
-     * ★ v2.3：用 `boundsInWindow()` 绝对坐标，与布局链（align/padding 层级）
-     * 完全无关；测量点挂在 `offset` 之前，读到的永远是静置矩形；
-     * 每次重新布局（旋转/分屏）后自动重测并重新钳制当前偏移。
-     */
     fun Modifier.draggableBounded(
         offsetState: androidx.compose.runtime.MutableState<Offset>,
         elemRectState: androidx.compose.runtime.MutableState<Rect>,
     ): Modifier =
         this
-            // 必须挂在 offset 之前：测量点自身矩形不随拖动变化 = 静置矩形
             .onGloballyPositioned { coords ->
                 elemRectState.value = coords.boundsInWindow()
-                // 布局变化后把已拖偏移重新钳回合法区间（防旋转后卡死界外）
                 clampOffset(offsetState, elemRectState.value, mapAreaWinRect.value)
             }
             .offset {
@@ -261,8 +191,6 @@ fun TrackRecordingHud(
                 }
             }
 
-    // ★ 根 Box 撑满全屏：fillMaxSize 在前，外部 modifier（BottomCenter 对齐 +
-    //    底部避让内边距）在后——padding 内缩整个面板的可用区域
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -270,10 +198,8 @@ fun TrackRecordingHud(
             .onSizeChanged { rootSize.value = it }
             .onGloballyPositioned { coords ->
                 rootWinRect.value = coords.boundsInWindow()
-                // ★ 钳制容器 = 组合根（整张地图），而非被外部 padding 缩小的 HUD 根
                 mapAreaWinRect.value =
                     coords.findRootCoordinates().boundsInWindow()
-                // 兜底读一次状态栏高度（listener 未触发时）
                 ViewCompat.getRootWindowInsets(view)?.let { wic ->
                     statusBarInsetPx.floatValue =
                         wic.getInsets(WindowInsetsCompat.Type.statusBars()).top.toFloat()
@@ -325,7 +251,6 @@ fun TrackRecordingHud(
                     fontFamily = FontFamily.Monospace,
                 )
             }
-            // ★ 第二行：当前速度 / 配速（录制中且有速度数据时显示）
             val v = state.currentSpeedMps
             if (state.recording && v != null && v > 0.1f) {
                 Text(
@@ -342,7 +267,6 @@ fun TrackRecordingHud(
                     fontFamily = FontFamily.Monospace,
                 )
             }
-            // ★ 第三行：当前经纬度（定位可用即显示，与是否记录无关）
             if (state.currentLat != null && state.currentLng != null) {
                 Text(
                     text = "%.6f, %.6f".format(state.currentLat, state.currentLng),
@@ -365,103 +289,59 @@ fun TrackRecordingHud(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            // 主按钮：开始 / 结束 —— 单层自定义按钮（Box + 自管手势）。
-            // ★ 不用 TextButton：它的 clickable 会消费按下事件，饿死同区的
-            //    长按手势（主传递后声明者先消费）。点按/长按都由本层 pointerInput 处理。
+            // ★ 主按钮：开始 / 结束（可通过 showToggleButton 整体隐藏）。
+            // 手势：未记录=单击开始；记录中=防误触手势（公共 stopRecordGuardGesture）
             val btnColor = when {
                 state.paused -> Color(0xFFFFD600)
                 state.recording -> Color(0xFFFF1744)
                 else -> Color(0xFF00E676)
             }
-            Box(contentAlignment = Alignment.Center) {
-                // 呼吸底环（录制中）
-                if (state.recording) {
-                    Box(
-                        modifier = Modifier
-                            .size(60.dp)
-                            .background(Color(0xFFFF1744).copy(alpha = pulse * 0.45f), CircleShape),
-                    )
-                }
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier
-                        .size(66.dp)
-                        .background(btnColor, CircleShape)
-                        .pointerInput(state.recording) {
-                            if (state.recording) {
-                                // ★ 结束两种途径：
-                                //   1) 长按 5 秒（屏幕正中充能环倒计时，提前松手取消）
-                                //   2) 快速连击 4 次（800ms 窗口，防误触；轻碰 1~3 次仅提示）
-                                detectTapGestures(
-                                    onPress = {
-                                        kotlinx.coroutines.coroutineScope {
-                                            val t0 = System.nanoTime()
-                                            stopping = true
-                                            val ticker = launch {
-                                                while (true) {
-                                                    stopProgress =
-                                                        ((System.nanoTime() - t0) / 1_000_000_000f / 5f)
-                                                            .coerceAtMost(1f)
-                                                    withFrameMillis { }
-                                                }
-                                            }
-                                            val releasedEarly = try {
-                                                kotlinx.coroutines.withTimeoutOrNull(5000.milliseconds) {
-                                                    tryAwaitRelease()
-                                                } != null
-                                            } finally {
-                                                ticker.cancel()
-                                            }
-                                            val pressMs = (System.nanoTime() - t0) / 1_000_000
-                                            when {
-                                                // 长按满 5 秒 → 结束
-                                                !releasedEarly -> callbacks.onToggle()
-                                                // 快速点按 → 连击计数
-                                                pressMs < 400 -> {
-                                                    val nowMs = System.currentTimeMillis()
-                                                    if (nowMs - lastTapMs > 800) tapCount = 0
-                                                    lastTapMs = nowMs
-                                                    tapCount++
-                                                    if (tapCount >= 4) {
-                                                        tapCount = 0
-                                                        hintTaps = 0
-                                                        callbacks.onToggle()
-                                                    } else {
-                                                        hintTaps = 4 - tapCount
-                                                        launch {
-                                                            kotlinx.coroutines.delay(900.milliseconds)
-                                                            hintTaps = 0
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            stopping = false
-                                            stopProgress = 0f
-                                        }
-                                    },
-                                )
-                            } else {
-                                detectTapGestures(onTap = { callbacks.onToggle() })
-                            }
-                        },
-                ) {
-                    // 常驻提示环（录制中表明可长按）
+            if (showToggleButton) {
+                Box(contentAlignment = Alignment.Center) {
                     if (state.recording) {
-                        Canvas(Modifier.size(66.dp)) {
-                            drawCircle(
-                                color = Color.White.copy(alpha = 0.25f),
-                                radius = (size.minDimension / 2f) - 2.dp.toPx(),
-                                style = Stroke(width = 2.dp.toPx()),
+                        Box(
+                            modifier = Modifier
+                                .size(60.dp)
+                                .background(Color(0xFFFF1744).copy(alpha = pulse * 0.45f), CircleShape),
+                        )
+                    }
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(66.dp)
+                            .background(btnColor, CircleShape)
+                            // 未记录：单击开始
+                            .pointerInput(state.recording) {
+                                if (!state.recording) {
+                                    detectTapGestures(onTap = { callbacks.onToggle() })
+                                }
+                            }
+                            // 记录中：防误触结束手势（与宿主 PUBLISH 按钮一致）
+                            .stopRecordGuardGesture(
+                                enabled = state.recording,
+                                onStop = callbacks.onToggle,
+                                onChargingChange = { stopping = it },
+                                onChargeProgress = { stopProgress = it },
+                                onTapHint = { hintTaps = it },
+                            ),
+                    ) {
+                        if (state.recording) {
+                            Canvas(Modifier.size(66.dp)) {
+                                drawCircle(
+                                    color = Color.White.copy(alpha = 0.25f),
+                                    radius = (size.minDimension / 2f) - 2.dp.toPx(),
+                                    style = Stroke(width = 2.dp.toPx()),
+                                )
+                            }
+                        }
+                        if (!stopping) {
+                            Icon(
+                                imageVector = if (state.recording) Icons.Filled.Stop else Icons.Filled.PlayArrow,
+                                contentDescription = if (state.recording) "结束（长按）" else "开始",
+                                tint = Color.White,
+                                modifier = Modifier.size(26.dp),
                             )
                         }
-                    }
-                    if (!stopping) {
-                        Icon(
-                            imageVector = if (state.recording) Icons.Filled.Stop else Icons.Filled.PlayArrow,
-                            contentDescription = if (state.recording) "结束（长按）" else "开始",
-                            tint = Color.White,
-                            modifier = Modifier.size(26.dp),
-                        )
                     }
                 }
             }
@@ -490,6 +370,7 @@ fun TrackRecordingHud(
                 Icon(Icons.AutoMirrored.Filled.List, "历史轨迹", tint = Color.White, modifier = Modifier.size(18.dp))
             }
         }
+
         // ======================= 屏幕正中：长按充能环 =======================
         if (stopping) {
             Box(
@@ -501,20 +382,18 @@ fun TrackRecordingHud(
                 Box(contentAlignment = Alignment.Center, modifier = Modifier.size(150.dp)) {
                     Canvas(Modifier.size(150.dp)) {
                         val r = size.minDimension / 2f - 6.dp.toPx()
-                        // 底环
                         drawCircle(
                             color = Color.White.copy(alpha = 0.25f),
                             radius = r,
                             style = Stroke(width = 8.dp.toPx()),
                         )
-                        // 充能弧
                         drawArc(
                             color = Color(0xFFFF1744),
                             startAngle = -90f,
                             sweepAngle = stopProgress * 360f,
                             useCenter = false,
-                            topLeft = Offset( 6.dp.toPx(), 6.dp.toPx()),
-                            size = androidx.compose.ui.geometry.Size(r * 2, r * 2),
+                            topLeft = Offset(6.dp.toPx(), 6.dp.toPx()),
+                            size = Size(r * 2, r * 2),
                             style = Stroke(width = 8.dp.toPx(), cap = StrokeCap.Round),
                         )
                     }

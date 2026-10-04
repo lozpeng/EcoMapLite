@@ -15,6 +15,13 @@ class PluginEntryClass : IPluginEntryClass {
      * 由本类的 `onLoad` / `onUnload` 管理注册与反注册。
      */
     private val fgsReceiver = TrackFgsReceiver()
+    /**
+     * ★ 跨插件命令接收器：home 等插件通过 sendInternalBroadcast 发来的
+     *   开始 / 暂停 / 继续 / 停止 / 切换命令都在这里分发到 TrackRecordingEngine。
+     *
+     * ★★ 修复：之前 onLoad 漏注册，导致插件收不到开启轨迹记录的广播。
+     */
+    private val trackCommandReceiver = TrackCommandReceiver()
 
     override val pluginModule: List<Module>
         get() = emptyList()
@@ -30,6 +37,8 @@ class PluginEntryClass : IPluginEntryClass {
         TrackRecordingEngine.init(context.application)
         // 2. 动态注册通知栏"停止"按钮的 Receiver
         fgsReceiver.register(context.application)
+        // 3. ★ 注册跨插件命令接收器
+        trackCommandReceiver.register(context.application)
     }
 
     override fun onUnload() {
@@ -39,5 +48,8 @@ class PluginEntryClass : IPluginEntryClass {
         }
         // 2. 反注册 Receiver
         fgsReceiver.unregister()
+
+        // 2. 反注册命令接收器
+        trackCommandReceiver.unregister()
     }
 }

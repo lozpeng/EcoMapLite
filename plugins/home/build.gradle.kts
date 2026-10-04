@@ -41,7 +41,8 @@ android {
 dependencies {
     implementation(platform(libs.androidx.compose.bom))
     compileOnly(projects.dependencies)
-    implementation(project(":ui:ui-geokori"))
+    compileOnly(project(":ui:ui-geokori"))
+    compileOnly(project(":lib:lib-geokori"))
     // 插件核心库 远程依赖方式
 //    compileOnly(libs.combolite.core)
     // 插件核心库 本地依赖方式

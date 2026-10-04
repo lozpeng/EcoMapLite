@@ -47,6 +47,7 @@ dependencies {
     //  · maplibre.opengl：显式声明（防止 dependencies 模块以后移除时静默失败）
     // =============================================================================================
     compileOnly(project(":lib:lib-geokori"))
+    compileOnly(project(":ui:ui-geokori"))
     compileOnly(projects.dependencies)
     compileOnly(projects.core)
     compileOnly(projects.plugins.common)

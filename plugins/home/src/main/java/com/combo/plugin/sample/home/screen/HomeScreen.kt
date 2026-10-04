@@ -14,11 +14,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Adb
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Air
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -42,12 +44,16 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import com.combo.core.runtime.PluginManager
+import com.combo.core.utils.sendInternalBroadcast
 import com.combo.plugin.sample.common.component.EmptyPage
+import com.combo.plugin.sample.home.bridge.TrackStateBridge
 import com.combo.plugin.sample.home.state.PluginStatus
 import com.combo.plugin.sample.home.viewmodel.HomeViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import org.cwcc.open.geokori.api.TrackIntents
 import org.cwcc.open.geokori.ui.material3.GeoKoriPluginScreenContainer
 import org.cwcc.open.geokori.ui.material3.bottomsheet.core.FlexibleSheetValue
 import org.cwcc.open.geokori.ui.material3.center.BottomToolbarItem
@@ -76,6 +82,11 @@ fun HomeScreen(viewModel: HomeViewModel = koinViewModel()) {
 
     var isCenterVisible by rememberSaveable { mutableStateOf(true) }
     var toolbarHeight by remember { mutableStateOf(64.dp) }
+
+    // ★ 订阅 geokori 的录制状态（geokori 未加载时默认 false）
+    val trackRecordingFlow = remember { TrackStateBridge.isRecordingFlow() }
+    val isRecording by (trackRecordingFlow ?: remember { MutableStateFlow(false) })
+        .collectAsState()
 
     // ========== 弹窗配置（可定制宽度和位置） ==========
     val pluginScreenConfig = remember {
@@ -116,7 +127,7 @@ fun HomeScreen(viewModel: HomeViewModel = koinViewModel()) {
         )
 
         // 构建工具栏数据
-        val toolbarItems = buildToolbarItems(currentDestination)
+        val toolbarItems = buildToolbarItems(currentDestination,isRecording)
         // 底部工具栏
         Box(
             modifier = Modifier
@@ -132,12 +143,14 @@ fun HomeScreen(viewModel: HomeViewModel = koinViewModel()) {
                     val destination = AppDestinations.fromId(selectedItem.id)
                     if (destination != null) {
                         currentDestination = destination
-
+                        if (destination == AppDestinations.PUBLISH) {
+                            context.sendInternalBroadcast(TrackIntents.ACTION_TOGGLE)
+                            return@GeoKoriCenter
+                        }
                         if (destination != AppDestinations.GeoKori) {
                             val pluginId = when (destination) {
                                 AppDestinations.SETTING -> HomeViewModel.PLUGIN_SETTING
                                 AppDestinations.ANIMAL  -> HomeViewModel.PLUGIN_ANIMAL
-                                AppDestinations.PUBLISH -> HomeViewModel.PLUGIN_EXAMPLE
                                 else -> null
                             }
                             if (pluginId != null) {
@@ -192,14 +205,28 @@ fun HomeScreen(viewModel: HomeViewModel = koinViewModel()) {
  * 构建工具栏项
  */
 @Composable
-private fun buildToolbarItems(currentDestination: AppDestinations): List<BottomToolbarItem> {
+private fun buildToolbarItems(
+        currentDestination: AppDestinations,
+        isRecording: Boolean,          // ★ 新增
+    ): List<BottomToolbarItem> {
     return AppDestinations.entries.map { destination ->
         BottomToolbarItem(
             id = destination.id,
-            icon = destination.icon,
-            label = destination.label,
+            icon = when {
+                // ★ 录制中：悬浮按钮变成"结束"
+                destination == AppDestinations.PUBLISH && isRecording -> Icons.Default.Stop
+                else -> destination.icon
+            },
+            label = when {
+                destination == AppDestinations.PUBLISH && isRecording -> "结束"
+                else -> destination.label
+            },
             isFloating = destination.isFloating,
-            isSelected = currentDestination == destination
+            isSelected = currentDestination == destination,
+            // ★ 录制中悬浮按钮变红
+            customColor = if (destination == AppDestinations.PUBLISH && isRecording)
+                androidx.compose.ui.graphics.Color(0xFFD81E06) else null,
+            stopGuard = destination == AppDestinations.PUBLISH && isRecording,
         )
     }
 }
@@ -295,7 +322,7 @@ enum class AppDestinations(
 ) {
     GeoKori("org.kori.plugin.geo", "地图", Icons.Default.Map),
     ANIMAL("org.kori.plugin.wildlife","动物", Icons.Default.Adb),
-    PUBLISH("publish", "记录", Icons.Default.Add, isFloating = true),
+    PUBLISH("publish", "记录", Icons.Default.Air, isFloating = true),
     SETTING("setting", "设置", Icons.Default.Settings),
     PROFILE("profile", "我的", Icons.Default.Person);
 

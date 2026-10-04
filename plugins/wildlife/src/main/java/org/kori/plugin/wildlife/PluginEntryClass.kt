@@ -9,10 +9,15 @@ import org.cwcc.open.geokori.map.LocalMapSession
 import org.cwcc.open.geokori.map.MapRuntime
 import org.cwcc.open.geokori.map.MapSession
 import org.koin.core.module.Module
+import org.kori.plugin.wildlife.di.diModule
+import org.kori.plugin.wildlife.screen.WildLifeScreen
 
 class PluginEntryClass : IPluginEntryClass {
     override val pluginModule: List<Module>
-        get() = emptyList()
+        get() = listOf(
+            diModule,
+        )
+
     private lateinit var pluginSession: MapSession
     private lateinit var pluginId: String
 
@@ -20,7 +25,7 @@ class PluginEntryClass : IPluginEntryClass {
     @Composable
     override fun Content() {
         CompositionLocalProvider(LocalMapSession provides pluginSession) {
-            //HomeScreen()
+            WildLifeScreen()
         }
     }
 
