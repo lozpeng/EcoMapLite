@@ -75,24 +75,23 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlin {
-        compilerOptions {
-             jvmTarget.set(JvmTarget.JVM_17)
-            freeCompilerArgs =
-                listOf(
-                    "-Xno-param-assertions",
-                    "-Xno-call-assertions",
-                    "-Xno-receiver-assertions",
-                )
-        }
-    }
     buildFeatures {
         buildConfig = true
         compose = true
         viewBinding = true
     }
 }
-
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_17)
+        freeCompilerArgs =
+            listOf(
+                "-Xno-param-assertions",
+                "-Xno-call-assertions",
+                "-Xno-receiver-assertions",
+            )
+    }
+}
 packagePlugins {
     enabled.set(true)
     buildType.set(PackageBuildType.RELEASE)

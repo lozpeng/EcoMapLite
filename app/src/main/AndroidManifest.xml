@@ -17,7 +17,7 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <!-- 若不需要后台持续定位，删掉下面这行 -->
-    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
+<!--    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />-->
     <!-- 前台服务（基础） -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 
@@ -29,15 +29,11 @@
 
     <!-- 相机 / 麦克风（轨迹媒体采集） -->
     <uses-permission android:name="android.permission.CAMERA" />
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
-
-    <!-- 建议一并补齐（同类问题会在其它功能上出现） -->
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
-
+    <!--是否允许备份数据 android:allowBackup -->
     <application
         android:name=".HostApp"
-        android:allowBackup="true"
+        android:allowBackup="false"
+        tools:replace="android:allowBackup"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:networkSecurityConfig="@xml/network_security_config"
