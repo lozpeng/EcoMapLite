@@ -94,6 +94,11 @@ dependencies {
     //============Maplibre native =============
     api(libs.maplibre.opengl)
 
+    //==============WorldWind ==================
+    api(libs.worldwind){
+        exclude(group = "io.ktor", module = "ktor-client-darwin")
+    }
+    api(libs.worldwind.assets)
     //==============自定义的通用组件=====
     api(project(":ui:ui-geokori"))
 }

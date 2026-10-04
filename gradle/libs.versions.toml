@@ -1,5 +1,8 @@
 [versions]
 agp = "9.1.0"
+minSdk = "26"
+compileSdk = "37"
+
 kotlin = "2.3.20"
 ksp = "2.2.0-2.0.2"
 kotlinxImmutable = "0.4.0"
@@ -43,8 +46,7 @@ gsyVideoPlayer = "13.2.1"
 
 # 来自 libs1 的新增版本
 cargo-ndk = "0.5.3"
-minSdk = "26"
-complySdk = "36"
+
 ktfmt = "0.27.0"
 paparazzi = "2.0.0-alpha04"
 kotlinx-datetime = "0.8.0"
@@ -68,16 +70,38 @@ glide = "4.16.0"
 lt10t = "1.11.1"
 composeMaterialCore = "1.6.2"
 androidx-databinding = "8.5.1"
-ormLite = "5.7"
+ormLite = "6.1"
 xOrmLite = "1.0.2"
 
 #combolite aar2apk
 aarToApkPlugin = "1.1.1"
 cameraVideo = "1.6.2"
 
+worldwind = "2.1.1"
+mil-sym-android = "2.11.1"
+mil-sym-java = "2.8.1"
+mil-sym-ts = "2.9.1"
+pngj = "2.1.0"
+webp-imageio = "0.11.0"
+
+geopackage-core = "6.6.7"
+geopackage-android = "6.7.5"
+geopackage-java = "6.6.5"
+
 [libraries]
 desugar_jdk_libs = { module = "com.android.tools:desugar_jdk_libs", version.ref = "desugar_jdk_libs" }
 
+#world wind
+worldwind = { group = "earth.worldwind", name = "worldwind-android", version.ref = "worldwind" }
+worldwind-assets = { group = "earth.worldwind", name = "worldwind-assets", version = "1.0.0" }
+worldwind-ktor={ group = "io.ktor", name = "ktor-client-okhttp", version = "3.6.0"}
+geopackage-core = { module = "mil.nga.geopackage:geopackage-core", version.ref = "geopackage-core" }
+geopackage-android = { module = "mil.nga.geopackage:geopackage-android", version.ref = "geopackage-android" }
+geopackage-java = { module = "mil.nga.geopackage:geopackage", version.ref = "geopackage-java" }
+mil-sym-android = { module = "io.github.missioncommand:mil-sym-android", version.ref = "mil-sym-android" }
+mil-sym-java = { module = "io.github.missioncommand:mil-sym-java", version.ref = "mil-sym-java" }
+pngj = { module = "ar.com.hjg:pngj", version.ref = "pngj" }
+webp-imageio = { module = "com.github.usefulness:webp-imageio", version.ref = "webp-imageio" }
 # Dexlib2
 dexlib2 = { group = "org.smali", name = "dexlib2", version.ref = "dexlib2" }
 # Timber
@@ -239,6 +263,9 @@ androidx-localbroadcastmanager = { group = "androidx.localbroadcastmanager", nam
 ormLite = { group = "com.j256.ormlite", name = "ormlite-android", version.ref = "ormLite" }
 xormlite = { group = "com.github.xuexiangjys.XOrmlite", name = "xormlite-runtime", version.ref = "xOrmLite" }
 xormAnnot = { group = "com.github.xuexiangjys.XOrmlite", name = "xormlite-compiler", version.ref = "xOrmLite" }
+ormlite-core = { module = "com.j256.ormlite:ormlite-core", version.ref = "ormLite" }
+ormlite-jdbc = { module = "com.j256.ormlite:ormlite-jdbc", version.ref = "ormLite" }
+
 
 # map libre
 maplibre-vulkan = { group = "org.maplibre.gl", name = "android-sdk", version.ref = "maplibre" }

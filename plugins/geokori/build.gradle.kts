@@ -24,13 +24,16 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_1_8
-        targetCompatibility = JavaVersion.VERSION_1_8
+        //sourceCompatibility = JavaVersion.VERSION_1_8
+        //targetCompatibility = JavaVersion.VERSION_1_8
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 
     kotlin {
         compilerOptions {
-            jvmTarget.set(JvmTarget.JVM_1_8)
+            //jvmTarget.set(JvmTarget.JVM_1_8)
+            jvmTarget.set(JvmTarget.JVM_17)
         }
     }
 }
@@ -52,7 +55,11 @@ dependencies {
     compileOnly(projects.core)
     compileOnly(projects.plugins.common)
     compileOnly(libs.maplibre.opengl)
-
+    compileOnly(libs.worldwind){
+        exclude(group = "io.ktor", module = "ktor-client-darwin")
+    }
+//    compileOnly(libs.worldwind.ktor)
+    compileOnly(libs.worldwind.assets)
     // =============================================================================================
     // 插件独占依赖（implementation —— 编译进插件 AAR）
     //

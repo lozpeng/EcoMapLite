@@ -14,6 +14,7 @@ pluginManagement {
     }
 
     repositories {
+        mavenCentral()
         maven("https://maven.aliyun.com/repository/google") {
             content {
                 includeGroupByRegex("com\\.android.*")
@@ -24,7 +25,6 @@ pluginManagement {
         maven("https://maven.aliyun.com/repository/gradle-plugin")
         maven("https://maven.aliyun.com/repository/public")
         google()
-        mavenCentral()
         gradlePluginPortal()
     }
 
@@ -49,14 +49,20 @@ private fun tomlValue(key: String): String =
 private fun readTomlVersionInt(key: String): Int = tomlValue(key).toInt()
 
 android {
-    compileSdk { version = release(readTomlVersionInt("complySdk")) }
+    compileSdk { version = release(readTomlVersionInt("compileSdk")) }
     minSdk     { version = release(readTomlVersionInt("minSdk")) }
-    targetSdk  { version = release(readTomlVersionInt("complySdk")) }
+    targetSdk  { version = release(readTomlVersionInt("compileSdk")) }
 }
 
 dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
+        mavenCentral(){
+            content {
+                includeGroup("earth.worldwind")
+                includeGroup("io.ktor")
+            }
+        }
         maven("https://maven.aliyun.com/repository/google") {
             content {
                 includeGroupByRegex("com\\.android.*")
@@ -66,7 +72,6 @@ dependencyResolutionManagement {
         }
         maven("https://maven.aliyun.com/repository/public")
         google()
-        mavenCentral()
         maven("https://jitpack.io")
     }
 }

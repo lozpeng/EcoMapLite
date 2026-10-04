@@ -15,7 +15,7 @@ plugins {
 aar2apk {
     modules {
         module(":plugins:common")
-        module(path = ":plugins:home")
+        module(":plugins:home")
         module(":plugins:guide")
         module(":plugins:example")
         module(":plugins:setting")
