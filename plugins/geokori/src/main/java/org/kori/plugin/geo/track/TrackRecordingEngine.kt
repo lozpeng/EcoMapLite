@@ -73,6 +73,12 @@ object TrackRecordingEngine {
     /** 轨迹文件根目录（相对于 filesDir）。 */
     private const val TRACKS_DIR = "tracks"
 
+    /**
+     * 崩溃锁文件名：记录进行中存在，stop() 正常结束时删除。
+     * init() 发现锁残留 = 上次会话非人为结束（崩溃/被杀）→ 断点续录候选。
+     */
+    private const val LOCK_FILE = ".recording_lock"
+
     // =============================================================================================
     // 内部状态
     // =============================================================================================
@@ -161,6 +167,33 @@ object TrackRecordingEngine {
     private val initialized = AtomicBoolean(false)
 
     // =============================================================================================
+    // 断点续录（崩溃/被杀后恢复）
+    // =============================================================================================
+
+    /**
+     * 非人为结束的上次会话（有值 = 等待用户决定继续/新开）。
+     * init() 时通过崩溃锁检测；决定后清除。
+     */
+    private val _resumeCandidate = MutableStateFlow<ResumeCandidate?>(null)
+    val resumeCandidate: StateFlow<ResumeCandidate?> = _resumeCandidate.asStateFlow()
+
+    /**
+     * 续录询问 UI 处理器。由插件 UI（TrackRecordingScreen）注册；
+     * null = 无 UI 环境（外部盲调），保持旧行为直接开新记录。
+     *
+     * 回调：handler(候选) { action -> 用户决定 }
+     */
+    @Volatile
+    private var resumePromptHandler: ((ResumeCandidate, (ResumeAction) -> Unit) -> Unit)? = null
+
+    /** 注册/注销续录询问处理器（UI 生命周期内注册）。 */
+    fun registerResumePromptHandler(
+        handler: ((ResumeCandidate, (ResumeAction) -> Unit) -> Unit)?,
+    ) {
+        resumePromptHandler = handler
+    }
+
+    // =============================================================================================
     // 初始化
     // =============================================================================================
 
@@ -191,6 +224,50 @@ object TrackRecordingEngine {
 
         // 有权限就直接把共享 tracker 跑起来（fix 常热）
         runCatching { ensureLocationTracking(ctx) }
+
+        // ★ 检测上次是否非人为结束（崩溃锁残留）→ 发布续录候选
+        detectAbortedSession(ctx)
+    }
+
+    /**
+     * 崩溃锁检测：存在即上次记录非正常结束（崩溃/进程被杀）。
+     *
+     * 读取锁中的会话目录，加载会话元数据 + 最后轨迹点坐标，
+     * 发布到 [resumeCandidate] 供 UI 询问用户是否继续。
+     */
+    private fun detectAbortedSession(ctx: Context) {
+        val tracksRoot = File(ctx.filesDir, TRACKS_DIR)
+        val lock = File(tracksRoot, LOCK_FILE)
+        if (!lock.exists()) return
+        val sessionId = runCatching { lock.readText().trim() }.getOrNull().orEmpty()
+        runCatching { lock.delete() }
+        if (sessionId.isEmpty()) return
+        val session = TrackSessionStore.readSession(File(tracksRoot, sessionId)) ?: return
+        if (session.segments.isEmpty()) return
+        scope.launch {
+            val last = withContext(Dispatchers.IO) {
+                session.segments.maxByOrNull { it.index }
+                    ?.let { TrackStore.read(it.rawFile).lastOrNull() }
+            }
+            _resumeCandidate.value = ResumeCandidate(
+                session = session,
+                lastLat = last?.lat,
+                lastLng = last?.lng,
+            )
+        }
+    }
+
+    /** 写崩溃锁（记录进行中）。 */
+    private fun writeLock(ctx: Context, sessionId: String) {
+        runCatching {
+            File(File(ctx.filesDir, TRACKS_DIR).apply { mkdirs() }, LOCK_FILE)
+                .writeText(sessionId)
+        }
+    }
+
+    /** 删崩溃锁（正常结束）。 */
+    private fun deleteLock(ctx: Context) {
+        runCatching { File(File(ctx.filesDir, TRACKS_DIR), LOCK_FILE).delete() }
     }
 
     // =============================================================================================
@@ -287,6 +364,7 @@ object TrackRecordingEngine {
         context: Context,
         config: SegmentConfig = SegmentConfig.Default,
         nameHint: String? = null,
+        resume: Boolean = false,
     ) {
         synchronized(lifecycleLock) {
             if (_state.value.recording) return
@@ -305,9 +383,17 @@ object TrackRecordingEngine {
             s.start()
             r.setSensorSampler(s)
 
-            // ---- 2. 开会话 ----
-            val sessionDir = r.startSession()
+            // ---- 2. 开会话（续录：在上次目录上继续；否则全新会话）----
+            val orphan = _resumeCandidate.value
+            val sessionDir = if (resume && orphan != null) {
+                _resumeCandidate.value = null
+                r.resumeSession(orphan.session.dir)
+            } else {
+                r.startSession()
+            }
             currentSessionDir = sessionDir
+            // ★ 崩溃锁：记录进行中持有，stop() 删除
+            writeLock(ctx, sessionDir.name)
 
             recorder = r
             sensorSampler = s
@@ -439,9 +525,10 @@ object TrackRecordingEngine {
                 )
             }
 
-            // ---- 4. 停止 FGS ----
+            // ---- 4. 停止 FGS + 删崩溃锁（正常结束）----
             ctx?.let {
                 runCatching { TrackFgsBridge.stop(it) }
+                deleteLock(it)
             }
 
             // ---- 5. 刷新会话列表 ----
@@ -450,12 +537,53 @@ object TrackRecordingEngine {
     }
 
     /**
+     * ★ 带断点续录判断的启动入口——**插件内 UI 与外部启动方统一走这里**。
+     *
+     * 行为：
+     *  · 存在续录候选 且 UI 处理器已注册 → 交给 UI 询问用户
+     *    （继续上次 / 开始新的 / 取消），期间不开始记录
+     *  · 存在候选 但无 UI（外部盲调）→ **保持旧行为**：清候选，直接开新记录
+     *  · 无候选 → 正常开始
+     *
+     * 因此不破坏任何现有启动方式（广播 / 工具栏按钮等）。
+     */
+    fun startWithResumeCheck(
+        context: Context,
+        config: SegmentConfig = SegmentConfig.Default,
+        nameHint: String? = null,
+    ) {
+        val candidate = _resumeCandidate.value
+        val handler = resumePromptHandler
+        when {
+            candidate != null && handler != null -> {
+                handler(candidate) { action ->
+                    when (action) {
+                        ResumeAction.RESUME -> start(context, config, nameHint, resume = true)
+                        ResumeAction.START_NEW -> {
+                            _resumeCandidate.value = null
+                            start(context, config, nameHint)
+                        }
+                        ResumeAction.CANCEL -> _resumeCandidate.value = null
+                    }
+                }
+            }
+            candidate != null -> {
+                // 无 UI：旧行为（直接开新），仅清掉候选
+                _resumeCandidate.value = null
+                start(context, config, nameHint)
+            }
+            else -> start(context, config, nameHint)
+        }
+    }
+
+    /**
      * 切换记录状态（开始 / 结束）。
      *
      * 注意：暂停状态不经过此函数——暂停用 [togglePause]。
+     * ★ 开始侧走 [startWithResumeCheck]：有断点候选且 UI 在时先询问。
      */
     fun toggle(context: Context) {
-        if (_state.value.recording) stop() else start(context)
+        if (_state.value.recording) stop() else startWithResumeCheck(context)
     }
 
     /** 是否正在记录。 */

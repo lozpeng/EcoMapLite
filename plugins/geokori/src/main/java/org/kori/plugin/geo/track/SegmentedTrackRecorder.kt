@@ -180,6 +180,66 @@ class SegmentedTrackRecorder(
     }
 
     /**
+     * ★ 断点续录：在既有会话目录上继续记录（崩溃/被杀后恢复用）。
+     *
+     * 与 [startSession] 的差异：
+     *  · 不新建目录——新段写入 [existingDir]（段号续编 seg-(max+1)）
+     *  · 统计累计——totalRawPoints/totalDistanceM 从 session.json 续载
+     *  · 事件续载——既有 events 保留（时间线暂停标记不丢），新事件追加
+     *  · 计时连续——startTimeMs 回拨上次累计时长，elapsed 从断点继续
+     */
+    fun resumeSession(existingDir: File): File {
+        sessionDir = existingDir
+        File(existingDir, "media").mkdirs()
+
+        // ---- 续载上次统计 / 事件 / 时长 ----
+        var prevDurationMs = 0L
+        runCatching {
+            val json = org.json.JSONObject(File(existingDir, "session.json").readText())
+            totalRawPoints = json.optInt("totalRawPoints", 0)
+            totalSmoothPoints = json.optInt("totalSmoothPoints", 0)
+            totalDistanceM = json.optDouble("totalDistanceM", 0.0)
+            val started = json.optLong("startedMs", System.currentTimeMillis())
+            val updated = json.optLong("updatedMs", started)
+            prevDurationMs = (updated - started).coerceAtLeast(0L)
+            json.optJSONArray("events")?.let { arr ->
+                for (i in 0 until arr.length()) {
+                    runCatching {
+                        val o = arr.getJSONObject(i)
+                        events.add(
+                            TrackEvent(
+                                type = TrackEventType.valueOf(o.getString("type")),
+                                timestampMs = o.getLong("timestampMs"),
+                                lat = o.optDouble("lat", 0.0),
+                                lng = o.optDouble("lng", 0.0),
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+        // 计时基准回拨：本次 elapsed 从上次的累计时长继续
+        startTimeMs = System.currentTimeMillis() - prevDurationMs
+
+        // ---- 段号续编 ----
+        segmentIndex = existingDir.listFiles { f ->
+            f.isFile && f.name.startsWith("seg-") && f.name.endsWith(".raw.csv")
+        }?.mapNotNull {
+            it.name.removePrefix("seg-").removeSuffix(".raw.csv").toIntOrNull()
+        }?.maxOrNull() ?: 0
+
+        // ---- 本运行周期的实时缓冲/坐标基准清零 ----
+        displayRaw.clear()
+        displaySmooth.clear()
+        lastRecordedLat = null
+        lastRecordedLng = null
+
+        startNewSegment()
+        writeSessionJson(existingDir)
+        return existingDir
+    }
+
+    /**
      * 停止记录并返回会话目录。
      *
      * 与 [endSession] 不同——`endSession` 只关闭，`stop` 关闭后返回目录，

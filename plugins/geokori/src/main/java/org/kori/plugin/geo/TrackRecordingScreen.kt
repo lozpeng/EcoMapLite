@@ -4,8 +4,17 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -21,7 +30,10 @@ import org.kori.plugin.geo.map.MapConfig
 import org.kori.plugin.geo.map.MapLibreMapView
 import org.kori.plugin.geo.service.TrackMediaCaptureActivity
 import org.kori.plugin.geo.service.VideoCaptureActivity
+import org.kori.plugin.geo.math.GeoMath
 import org.kori.plugin.geo.track.RecordingPermissions
+import org.kori.plugin.geo.track.ResumeAction
+import org.kori.plugin.geo.track.ResumeCandidate
 import org.kori.plugin.geo.track.TrackPlaybackScreen
 import org.kori.plugin.geo.track.TrackMapCallbacks
 import org.kori.plugin.geo.track.TrackRecordingEngine
@@ -73,6 +85,19 @@ fun TrackRecordingScreen(
 
     // ★ 轨迹时间线
     var timelineSession by remember { mutableStateOf<TrackSession?>(null) }
+
+    // =========================================================================
+    // ★ 断点续录：引擎检测到"上次非人为结束"时由 handler 触发询问对话框
+    // =========================================================================
+    var resumeCandidate by remember { mutableStateOf<ResumeCandidate?>(null) }
+    var resumeDecide by remember { mutableStateOf<((ResumeAction) -> Unit)?>(null) }
+    DisposableEffect(Unit) {
+        TrackRecordingEngine.registerResumePromptHandler { candidate, decide ->
+            resumeCandidate = candidate
+            resumeDecide = decide
+        }
+        onDispose { TrackRecordingEngine.registerResumePromptHandler(null) }
+    }
 
     // ★【新增】响应"显示历史"命令（home 广播 → TrackCommandReceiver → TrackUiEvents）
     LaunchedEffect(Unit) {
@@ -226,6 +251,70 @@ fun TrackRecordingScreen(
             TrackTimelineScreen(
                 session = session,
                 onClose = { timelineSession = null },
+            )
+        }
+
+        // =========================================================================
+        // ★ 断点续录询问对话框
+        // =========================================================================
+        resumeCandidate?.let { candidate ->
+            // 当前位置（引擎状态持续更新）与中断点的距离
+            val curLat = state.currentLat
+            val curLng = state.currentLng
+            val distText = if (candidate.lastLat != null && candidate.lastLng != null &&
+                curLat != null && curLng != null
+            ) {
+                val d = GeoMath.haversineMeters(
+                    candidate.lastLat, candidate.lastLng, curLat, curLng,
+                )
+                if (d >= 1000.0) "距中断点 %.2f 公里".format(d / 1000)
+                else "距中断点 %d 米".format(d.toInt())
+            } else {
+                "定位中，暂时无法计算与中断点的距离"
+            }
+
+            AlertDialog(
+                onDismissRequest = {
+                    resumeDecide?.invoke(ResumeAction.CANCEL)
+                    resumeCandidate = null
+                    resumeDecide = null
+                },
+                title = { Text("继续上次轨迹？") },
+                text = {
+                    Column {
+                        Text("检测到上次轨迹记录未正常结束（应用退出或系统清理）。")
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "${candidate.session.name}\n" +
+                                    "${candidate.session.distanceText} · " +
+                                    "${candidate.session.durationText} · " +
+                                    "${candidate.session.totalRawPoints} 点\n" +
+                                    distText,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        resumeDecide?.invoke(ResumeAction.RESUME)
+                        resumeCandidate = null
+                        resumeDecide = null
+                    }) { Text("继续上次") }
+                },
+                dismissButton = {
+                    Row {
+                        TextButton(onClick = {
+                            resumeDecide?.invoke(ResumeAction.CANCEL)
+                            resumeCandidate = null
+                            resumeDecide = null
+                        }) { Text("取消") }
+                        TextButton(onClick = {
+                            resumeDecide?.invoke(ResumeAction.START_NEW)
+                            resumeCandidate = null
+                            resumeDecide = null
+                        }) { Text("开始新的") }
+                    }
+                },
             )
         }
     }
