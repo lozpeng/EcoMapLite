@@ -50,16 +50,13 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.ProvidableCompositionLocal
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.scale
@@ -75,6 +72,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.cwcc.open.geokori.framework.PluginModuleUtils
+import org.cwcc.open.geokori.map.LocalMapSession
 import org.cwcc.open.geokori.map.MapSession
 import org.cwcc.open.geokori.ui.material3.center.model.CollapsedQuickActions
 import org.cwcc.open.geokori.ui.material3.center.model.ExpandedQuickActions
@@ -82,12 +80,13 @@ import org.cwcc.open.geokori.ui.material3.center.model.QuickAction
 import org.cwcc.open.plugin.wildlife.viewmodel.WildLifeViewModel
 import org.koin.androidx.compose.koinViewModel
 import org.kori.plugin.wildlife.actions.defaultWildLifeActions
+import org.kori.plugin.wildlife.layers.IllegalEventsLayerController
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterialApi::class)
 @Composable
 fun WildLifeScreen(
     quickActions: List<QuickAction> = defaultWildLifeActions(),
-    bizActions:List<QuickAction> = defaultBizQuickActions(),
+    bizActions: List<QuickAction> = defaultBizQuickActions(),
     viewModel: WildLifeViewModel = koinViewModel(),
     expand: Boolean = true,
 ) {
@@ -106,9 +105,23 @@ fun WildLifeScreen(
         refreshing = state.isLoading,
         onRefresh = { viewModel.refreshWildLifeData() }
     )
-    val LocalMapSession: ProvidableCompositionLocal<MapSession?> =
-        staticCompositionLocalOf { null }
 
+    // ★ 插件级 Session（PluginEntryClass 的 CompositionLocalProvider 注入）
+    val mapSession = LocalMapSession.current
+
+    // ★【关键修复】bizActions 提升为 Compose 可观察状态：
+    //   直接改 QuickAction.checked（普通 var）不会触发重组，
+    //   必须整项 copy 替换进 State<List>，按钮才会即时刷新。
+    //   初始时同步一次控制器的真实开关状态（sheet 重开不高亮丢状态）。
+    val bizActionsState = remember {
+        mutableStateOf(
+            bizActions.map {
+                if (it.label == "盗猎活动") {
+                    it.copy(checked = IllegalEventsLayerController.isActive)
+                } else it
+            }
+        )
+    }
 
     Scaffold(
         topBar = {
@@ -139,12 +152,6 @@ fun WildLifeScreen(
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Spacer(modifier = Modifier.width(12.dp))
-//            Text(
-//                text = "野生动植物分布情况",
-//                fontWeight = FontWeight.Medium,
-//                style = MaterialTheme.typography.bodyMedium,
-//                color = MaterialTheme.colorScheme.onSurfaceVariant,
-//            )
                     }
                 }
                 item {
@@ -156,14 +163,14 @@ fun WildLifeScreen(
                             ExpandedQuickActions(
                                 actions = quickActions,
                                 onActionClick = { action ->
-                                    handleQuickActionClick(action, context, true)
+                                    handleQuickActionClick(action, context, true, mapSession, bizActionsState)
                                 },
                             )
                         } else {
                             CollapsedQuickActions(
                                 actions = quickActions.take(4),
                                 onActionClick = { action ->
-                                    handleQuickActionClick(action, context, true)
+                                    handleQuickActionClick(action, context, true, mapSession, bizActionsState)
                                 },
                             )
                         }
@@ -183,9 +190,6 @@ fun WildLifeScreen(
                             fontWeight = FontWeight.Bold,
                             color = Color(0xFF202124)
                         )
-//            TextButton(onClick = { }) {
-//              Text("查看更多", fontSize = 13.sp)
-//            }
                     }
                     Spacer(modifier = Modifier.height(8.dp))
                     AnimatedContent(
@@ -194,16 +198,16 @@ fun WildLifeScreen(
                     ) { expanded ->
                         if (expanded) {
                             ExpandedQuickActions(
-                                actions = bizActions,
+                                actions = bizActionsState.value,
                                 onActionClick = { action ->
-                                    handleQuickActionClick(action, context, true)
+                                    handleQuickActionClick(action, context, true, mapSession, bizActionsState)
                                 },
                             )
                         } else {
                             CollapsedQuickActions(
-                                actions = bizActions.take(4),
+                                actions = bizActionsState.value.take(4),
                                 onActionClick = { action ->
-                                    handleQuickActionClick(action, context, true)
+                                    handleQuickActionClick(action, context, true, mapSession, bizActionsState)
                                 },
                             )
                         }
@@ -247,16 +251,6 @@ fun WildLifeScreen(
     }
 }
 
-/**
- * SpeedDial 风格浮动按钮组件
- *
- * 最终版修正：
- * 1. 摒弃了全屏透明侧边栏。
- * 2. 红框直接放在承载主按钮的 Box 中。
- * 3. 主按钮在哪边，红框就在另一边。
- * 4. 红框和主按钮都贴底对齐（平行）。
- * 5. 点击红框响应，主按钮直接切过去。
- */
 @Composable
 fun SpeedDialFAB(
     isExpanded: Boolean,
@@ -268,10 +262,8 @@ fun SpeedDialFAB(
     val fabSize = 56.dp
     val subButtonSize = 48.dp
 
-    // 位置状态：true = 主按钮在右侧，false = 主按钮在左侧
     var isRightHandMode by remember { mutableStateOf(false) }
 
-    // 展开动画
     val scale = remember { Animatable(if (isExpanded) 1f else 0f) }
 
     LaunchedEffect(isExpanded) {
@@ -284,33 +276,24 @@ fun SpeedDialFAB(
         )
     }
 
-    // 承载主按钮和红框的顶层 Box
     Box(modifier = modifier) {
-
-        // ===============================================
-        // ✅ 红框（对侧显示）
-        // 当主按钮在右时，红框在左 (BottomStart)；主按钮在左时，红框在右 (BottomEnd)
-        // 确保和主按钮一样的 Bottom + Padding 距离
-        // ===============================================
         Box(
             modifier = Modifier
                 .align(if (isRightHandMode) Alignment.BottomStart else Alignment.BottomEnd)
                 .padding(16.dp)
-                .size(fabSize + 2.dp) // 比主按钮大 2dp
+                .size(fabSize + 2.dp)
                 .drawBehind {
                     val strokeWidth = 2f
                     val dashLength = 8f
                     val gapLength = 6f
-                    val color = Color.Red // 红色
+                    val color = Color.Red
 
-                    // 外边框（红实线）
                     drawRoundRect(
                         color = color,
                         style = Stroke(width = strokeWidth),
                         cornerRadius = CornerRadius(8.0f)
                     )
 
-                    // 中间十字线（虚线）
                     val centerX = size.width / 2
                     val centerY = size.height / 2
                     drawLine(
@@ -332,7 +315,6 @@ fun SpeedDialFAB(
                     indication = null,
                     interactionSource = remember { MutableInteractionSource() }
                 ) {
-                    // 点击红框：翻转模式，主按钮切换过来
                     isRightHandMode = !isRightHandMode
                     if (isExpanded) {
                         onExpandedChange(false)
@@ -345,10 +327,6 @@ fun SpeedDialFAB(
                 }
         ) {}
 
-        // ===============================================
-        // ✅ 主按钮组
-        // 跟随 isRightHandMode 在左右两侧切换
-        // ===============================================
         Column(
             modifier = Modifier
                 .align(if (isRightHandMode) Alignment.BottomEnd else Alignment.BottomStart)
@@ -356,7 +334,6 @@ fun SpeedDialFAB(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // 子按钮4：同步数据
             if (isExpanded) {
                 SpeedDialActionButton(
                     icon = Icons.Default.LocalPolice,
@@ -372,7 +349,6 @@ fun SpeedDialFAB(
                 )
             }
 
-            // 子按钮3：信息
             if (isExpanded) {
                 SpeedDialActionButton(
                     icon = Icons.Default.Info,
@@ -388,7 +364,6 @@ fun SpeedDialFAB(
                 )
             }
 
-            // 子按钮2：添加记录
             if (isExpanded) {
                 SpeedDialActionButton(
                     icon = Icons.Default.Add,
@@ -404,7 +379,6 @@ fun SpeedDialFAB(
                 )
             }
 
-            // 子按钮1：打开文件夹
             if (isExpanded) {
                 SpeedDialActionButton(
                     icon = Icons.Default.FolderOpen,
@@ -420,7 +394,6 @@ fun SpeedDialFAB(
                 )
             }
 
-            // 主按钮
             FloatingActionButton(
                 onClick = { onExpandedChange(!isExpanded) },
                 containerColor = if (isExpanded) Color(0xFFF44336) else Color(0xFF4CAF50),
@@ -437,9 +410,6 @@ fun SpeedDialFAB(
     }
 }
 
-/**
- * SpeedDial 子按钮组件
- */
 @Composable
 fun SpeedDialActionButton(
     icon: ImageVector,
@@ -462,10 +432,18 @@ fun SpeedDialActionButton(
     }
 }
 
+/**
+ * ★【变更】盗猎活动的 Toast 全部由 IllegalEventsLayerController 负责
+ *   （加载中/已显示/已关闭/失败）；本函数只负责开关 + 按钮 checked 状态刷新。
+ * ★【关键】checked 状态通过替换 bizActionsState 里对应项来刷新
+ *   （直接改 QuickAction.checked 这个普通 var 不会触发重组）。
+ */
 private fun handleQuickActionClick(
     action: QuickAction,
     context: android.content.Context,
-    isDependenciesReady: Boolean
+    isDependenciesReady: Boolean,
+    mapSession: MapSession?,
+    bizActionsState: androidx.compose.runtime.MutableState<List<QuickAction>>,
 ) {
     if (!isDependenciesReady) {
         Toast.makeText(context, "依赖插件未加载，请检查插件配置", Toast.LENGTH_SHORT).show()
@@ -474,16 +452,26 @@ private fun handleQuickActionClick(
 
     when (action.label) {
         "虎人工繁育" -> Toast.makeText(context, "虎人工繁育", Toast.LENGTH_SHORT).show()
+
         "盗猎活动" -> {
-            //WildlifeIllegalEventsProvider.loadFromServer()
+            val session = mapSession
+            if (session == null) {
+                Toast.makeText(context, "地图插件未加载，请稍后再试", Toast.LENGTH_SHORT).show()
+                return
+            }
+            val wasActive = IllegalEventsLayerController.isActive
+            IllegalEventsLayerController.toggle(context, session)
+            val nowActive = !wasActive
+
+            // ★ 即时刷新按钮高亮：整项 copy 替换进 State<List> 触发重组
+            bizActionsState.value = bizActionsState.value.map {
+                if (it.label == "盗猎活动") it.copy(checked = nowActive) else it
+            }
         }
+
         "象实时监测" -> {
             PluginModuleUtils.showBottomSheet(
-                content = {
-//                    FerrostarTheme{
-//                        ElephantMonitoringContent()
-//                    }
-                },
+                content = {},
                 title = action.label,
                 closeable = true,
                 isNormalActivity = true
@@ -492,9 +480,7 @@ private fun handleQuickActionClick(
         }
         "栖息地分布" -> {
             PluginModuleUtils.showBottomSheet(
-                content = {
-                        ElephantMonitoringContent()
-                },
+                content = { ElephantMonitoringContent() },
                 title = action.label,
                 isNormalActivity = false
             )
@@ -531,7 +517,6 @@ fun ElephantMonitoringContent() {
             .fillMaxWidth()
     ) {
         Spacer(modifier = Modifier.height(16.dp))
-        // 监测数据卡片
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(
@@ -554,7 +539,6 @@ fun ElephantMonitoringContent() {
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // 数据列表
         LazyColumn(
             modifier = Modifier.fillMaxSize()
         ) {
