@@ -7,6 +7,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -31,9 +32,11 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -58,11 +61,24 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import android.Manifest
+import android.media.MediaRecorder
+import android.os.Build
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import kotlinx.coroutines.delay
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.roundToInt
 import org.cwcc.open.geokori.ui.gesture.stopRecordGuardGesture
 import org.kori.plugin.geo.track.TrackMapCallbacks
+import org.kori.plugin.geo.track.TrackRecordingEngine
+import org.kori.plugin.geo.track.di.TrackMediaRecord
 import org.kori.plugin.geo.track.di.TrackServiceState
 
 /**
@@ -127,6 +143,99 @@ fun TrackRecordingHud(
 
     /** ★ 连击结束：还需点击次数（0 = 不显示提示） */
     var hintTaps by remember { mutableIntStateOf(0) }
+
+    // =========================================================================
+    // ★ 长按原地录音：按住即录、松开保存；中央进度环显示时长
+    // =========================================================================
+    var audioRecording by remember { mutableStateOf(false) }
+    var audioElapsedMs by remember { mutableLongStateOf(0L) }
+    var audioRecorder by remember { mutableStateOf<MediaRecorder?>(null) }
+    var audioFile by remember { mutableStateOf<File?>(null) }
+    var audioHint by remember { mutableStateOf(false) }
+    val appContext = androidx.compose.ui.platform.LocalContext.current.applicationContext
+
+    /** 开始录音。返回 false = 条件不满足（未在记录/无权限），调用方回退旧路径。 */
+    fun startAudioRecording(): Boolean {
+        val sessionDir = TrackRecordingEngine.currentSessionDir ?: return false
+        if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.RECORD_AUDIO)
+            != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) return false
+        return try {
+            val dir = File(sessionDir, "media").apply { mkdirs() }
+            val f = File(
+                dir,
+                "audio-${SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())}.m4a",
+            )
+            val rec = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+                MediaRecorder(appContext) else @Suppress("DEPRECATION") MediaRecorder()
+            rec.apply {
+                setAudioSource(MediaRecorder.AudioSource.MIC)
+                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                setAudioEncodingBitRate(96_000)
+                setAudioSamplingRate(44_100)
+                setOutputFile(f.absolutePath)
+                prepare()
+                start()
+            }
+            audioRecorder = rec
+            audioFile = f
+            true
+        } catch (e: Exception) {
+            runCatching { audioRecorder?.release() }
+            audioRecorder = null
+            audioFile = null
+            false
+        }
+    }
+
+    /** 停止录音。[save] = true 松开保存（写入媒体记录，地图出标记）；false 丢弃。 */
+    fun stopAudioRecording(save: Boolean) {
+        val rec = audioRecorder ?: return
+        val f = audioFile
+        audioRecorder = null
+        audioFile = null
+        runCatching { rec.stop() }
+        runCatching { rec.release() }
+        if (save && f != null && f.exists() && f.length() > 0L) {
+            val loc = TrackRecordingEngine.lastKnownLocation
+            TrackRecordingEngine.notifyMediaAdded(
+                TrackMediaRecord(
+                    type = TrackMediaRecord.Type.AUDIO,
+                    filePath = "media/${f.name}",
+                    timestampMs = System.currentTimeMillis(),
+                    lat = loc?.latitude ?: 0.0,
+                    lng = loc?.longitude ?: 0.0,
+                    accuracyM = if (loc?.hasAccuracy() == true) loc.accuracy else null,
+                    durationSec = audioElapsedMs / 1000.0,
+                ),
+            )
+        } else {
+            f?.delete()
+        }
+    }
+
+    // 组合销毁兜底：还在录就保存（避免中途退出丢录音）
+    DisposableEffect(Unit) {
+        onDispose { stopAudioRecording(save = true) }
+    }
+
+    // ★ 录音时长刷新：recording 期间每 50ms 更新（协程随状态退出自动取消）
+    LaunchedEffect(audioRecording) {
+        if (!audioRecording) return@LaunchedEffect
+        val t0 = System.currentTimeMillis()
+        while (true) {
+            audioElapsedMs = System.currentTimeMillis() - t0
+            delay(50)
+        }
+    }
+
+    // ★ "长按录音"提示 1.2s 自动消失
+    LaunchedEffect(audioHint) {
+        if (!audioHint) return@LaunchedEffect
+        delay(1200)
+        audioHint = false
+    }
 
     fun clampOffset(
         offsetState: androidx.compose.runtime.MutableState<Offset>,
@@ -356,18 +465,54 @@ fun TrackRecordingHud(
                     )
                 }
                 HudFab(callbacks.onPhoto, Color(0x44FFFFFF), 40) {
-                    Icon(Icons.Filled.CameraAlt, "拍照", tint = Color.White, modifier = Modifier.size(18.dp))
+                    Icon(Icons.Filled.CameraAlt, "拍照", tint = Color.White, modifier = Modifier.size(22.dp))
                 }
-                HudFab(callbacks.onAudio, Color(0x44FFFFFF), 40) {
-                    Icon(Icons.Filled.Mic, "录音", tint = Color.White, modifier = Modifier.size(18.dp))
+                // ★ 录音：长按按住即录、松开保存（中央进度环显示时长）；
+                //   短按提示；无权限/未记录时回退原录音界面
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(40.dp)
+                        .background(
+                            if (audioRecording) Color(0xFFFF1744) else Color(0x44FFFFFF),
+                            CircleShape,
+                        )
+                        .pointerInput(state.recording) {
+                            if (!state.recording) return@pointerInput
+                            awaitEachGesture {
+                                val down = awaitFirstDown()
+                                val longPress = awaitLongPressOrCancellation(down.id)
+                                if (longPress != null) {
+                                    if (startAudioRecording()) {
+                                        audioRecording = true
+                                        // 按住期间等待松开（时长刷新由外部
+                                        // LaunchedEffect(audioRecording) 驱动）
+                                        while (true) {
+                                            val ev = awaitPointerEvent()
+                                            if (ev.changes.all { !it.pressed }) break
+                                        }
+                                        stopAudioRecording(save = true)
+                                        audioRecording = false
+                                    } else {
+                                        // 无权限或不在记录 → 回退原录音界面（内部处理权限）
+                                        callbacks.onAudio()
+                                    }
+                                } else {
+                                    // 短按：提示长按（自动消失由 LaunchedEffect 驱动）
+                                    audioHint = true
+                                }
+                            }
+                        },
+                ) {
+                    Icon(Icons.Filled.Mic, "录音", tint = Color.White, modifier = Modifier.size(36.dp))
                 }
                 HudFab(callbacks.onVideo, Color(0x44FFFFFF), 40) {
-                    Icon(Icons.Filled.Videocam, "录像", tint = Color.White, modifier = Modifier.size(18.dp))
+                    Icon(Icons.Filled.Videocam, "录像", tint = Color.White, modifier = Modifier.size(22.dp))
                 }
             }
 
             HudFab(callbacks.onOpenHistory, Color(0x44FFFFFF), 40) {
-                Icon(Icons.AutoMirrored.Filled.List, "历史轨迹", tint = Color.White, modifier = Modifier.size(18.dp))
+                Icon(Icons.AutoMirrored.Filled.List, "历史轨迹", tint = Color.White, modifier = Modifier.size(22.dp))
             }
         }
 
@@ -412,6 +557,65 @@ fun TrackRecordingHud(
                     }
                 }
             }
+        }
+
+        // ======================= 屏幕正中：录音进度环（时长） =======================
+        if (audioRecording) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0x40000000)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(contentAlignment = Alignment.Center, modifier = Modifier.size(130.dp)) {
+                    Canvas(Modifier.size(130.dp)) {
+                        val r = size.minDimension / 2f - 5.dp.toPx()
+                        drawCircle(
+                            color = Color.White.copy(alpha = 0.25f),
+                            radius = r,
+                            style = Stroke(width = 6.dp.toPx()),
+                        )
+                        // 时钟式进度：60 秒转满一圈，继续录音继续转
+                        val sec = audioElapsedMs / 1000f
+                        drawArc(
+                            color = Color(0xFFFF1744),
+                            startAngle = -90f,
+                            sweepAngle = (sec % 60f) / 60f * 360f,
+                            useCenter = false,
+                            topLeft = Offset(5.dp.toPx(), 5.dp.toPx()),
+                            size = Size(r * 2, r * 2),
+                            style = Stroke(width = 6.dp.toPx(), cap = StrokeCap.Round),
+                        )
+                    }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(Icons.Filled.Mic, "录音中", tint = Color(0xFFFF1744), modifier = Modifier.size(26.dp))
+                        Text(
+                            text = formatDuration(audioElapsedMs),
+                            color = Color.White,
+                            fontSize = 30.sp,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                        )
+                        Text("松开停止并保存", color = Color(0xFF8B949E), fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+
+        // ======================= 长按录音提示 =======================
+        if (audioHint && !audioRecording) {
+            Text(
+                text = "长按麦克风开始录音",
+                color = Color(0xFF00E5FF),
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 108.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(Color(0xCC000000))
+                    .padding(horizontal = 14.dp, vertical = 6.dp),
+            )
         }
 
         // ======================= 连击提示（再点 N 次结束） =======================
