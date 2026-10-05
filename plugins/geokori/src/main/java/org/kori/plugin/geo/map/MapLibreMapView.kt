@@ -505,7 +505,19 @@ fun MapLibreMapView(
     LaunchedEffect(mapView) {
         mapView.getMapAsync { map ->
             mapRef = map
+            map.uiSettings.apply {
+                // 1. 隐藏 MapLibre logo 与归因按钮
+                isLogoEnabled = false
+                isAttributionEnabled = false
 
+                // 2. 指北针位置：默认在左上角，移到右上角（可调 gravity 和边距）
+                compassGravity = android.view.Gravity.TOP or android.view.Gravity.END
+                val m = (16 * context.resources.displayMetrics.density).toInt()
+                val statusBar = (24 * context.resources.displayMetrics.density).toInt()
+                val extra48 = (84 * context.resources.displayMetrics.density).toInt()
+                // ★ 上边距 = 16(基础) + 24(状态栏) + 48(额外下移)
+                setCompassMargins(m, m + statusBar + extra48, m, m)
+            }
             // =================================================================================
             // ★ 地图单击 → 广播/回调（不消费事件，图层点击照常工作）
             // =================================================================================
@@ -559,9 +571,15 @@ fun MapLibreMapView(
 
             map.setStyle(styleBuilder) { style ->
                 styleRef = style
+                val lastFix = TrackRecordingEngine.lastKnownLocation
+                val initialTarget = if (config.showUserLocation && lastFix != null) {
+                    LatLng(lastFix.latitude, lastFix.longitude)
+                } else {
+                    LatLng(config.initialCenterLat, config.initialCenterLng)
+                }
 
                 map.cameraPosition = CameraPosition.Builder()
-                    .target(LatLng(config.initialCenterLat, config.initialCenterLng))
+                    .target(initialTarget)
                     .zoom(config.initialZoom)
                     .build()
 

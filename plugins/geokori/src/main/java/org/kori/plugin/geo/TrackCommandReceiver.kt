@@ -7,8 +7,11 @@ import android.content.IntentFilter
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import org.cwcc.open.geokori.api.ITrackRecordingStateApi
@@ -17,23 +20,31 @@ import org.kori.plugin.geo.track.TrackRecordingEngine
 
 
 /**
+ * 【新增】插件内 UI 事件总线（非跨插件——仅 geokori 内部使用）。
+ *
+ * 命令接收器（非 Composable）收到"显示历史"等 UI 类命令后，
+ * 经此事件流转发给 TrackRecordingScreen / TrackRecordingScreenWW 消费。
+ */
+object TrackUiEvents {
+    private val _showHistory = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val showHistory: SharedFlow<Unit> = _showHistory.asSharedFlow()
+
+    fun requestShowHistory() {
+        _showHistory.tryEmit(Unit)
+    }
+}
+
+
+/**
  * 轨迹记录命令接收器（geokori 插件内）。
  *
- * home 等插件通过 sendInternalBroadcast 发命令，本类分发到
- * [TrackRecordingEngine]。fire-and-forget：发送方无需知道 geokori 是否加载。
+ * home 等插件通过 sendInternalBroadcast 发命令，本类分发：
+ *  · 录制命令 → [TrackRecordingEngine]
+ *  · 显示历史 → [TrackUiEvents]（由 Compose 屏幕订阅后弹 TrackHistoryScreen）
+ *
+ * fire-and-forget：发送方无需知道 geokori 是否加载。
  *
  * 在 PluginEntryClass.onLoad 注册、onUnload 注销（见下方示例）。
-
- * 用法（PluginEntryClass）：
- * ```kotlin
- * private val trackCommandReceiver = TrackCommandReceiver()
- * override fun onLoad(context: PluginContext) {
- *     trackCommandReceiver.register(context.application)
- * }
- * override fun onUnload() {
- *     trackCommandReceiver.unregister()
- * }
- * ```
  */
 class TrackCommandReceiver : BroadcastReceiver() {
 
@@ -54,6 +65,9 @@ class TrackCommandReceiver : BroadcastReceiver() {
             TrackIntents.ACTION_RESUME -> TrackRecordingEngine.resume()
             TrackIntents.ACTION_STOP   -> TrackRecordingEngine.stop()
             TrackIntents.ACTION_TOGGLE -> TrackRecordingEngine.toggle(appCtx)
+
+            // ★【新增】UI 类命令：转发给 Compose 屏幕弹历史轨迹界面
+            TrackIntents.ACTION_SHOW_HISTORY -> TrackUiEvents.requestShowHistory()
         }
     }
 
@@ -63,7 +77,7 @@ class TrackCommandReceiver : BroadcastReceiver() {
     fun register(context: Context) {
         val appCtx = context.applicationContext
         val filter = IntentFilter().apply {
-            TrackIntents.ALL_ACTIONS.forEach { addAction(it) }
+            TrackIntents.GEOKORI_COMMAND_ACTIONS.forEach { addAction(it) }
         }
         ContextCompat.registerReceiver(
             appCtx,
@@ -86,8 +100,8 @@ class TrackCommandReceiver : BroadcastReceiver() {
 /**
  * [ITrackRecordingStateApi] 的 geokori 插件侧实现。
  *
- * 命令不经过本类（走广播 [org.cwcc.open.geokori.map.TrackIntents]），
- * 这里只把 TrackRecordingEngine.state 投影成两个 StateFlow。
+ * 命令不经过本类（走广播 [TrackIntents]），这里只把 TrackRecordingEngine.state
+ * 投影成两个 StateFlow。
  *
  * ★ 必须保留无参构造函数；混淆需 keep（PluginManager 按类名全局索引定位）。
  */

@@ -113,7 +113,7 @@ data class MapConfig(
     // =============================================================================================
     val initialCenterLat: Double = 35.0,
     val initialCenterLng: Double = 105.0,
-    val initialZoom: Double = 3.5,
+    val initialZoom: Double =6.0,
 
     // =============================================================================================
     // 图层过滤器

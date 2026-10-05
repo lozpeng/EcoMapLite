@@ -25,7 +25,6 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import earth.worldwind.WorldWindow
 import earth.worldwind.geom.AltitudeMode
 import earth.worldwind.geom.Angle.Companion.degrees
-import earth.worldwind.geom.Position
 import earth.worldwind.navigator.NavigatorEvent
 import earth.worldwind.navigator.NavigatorListener
 import kotlin.math.abs
@@ -60,7 +59,7 @@ import org.kori.plugin.geo.track.ui.TrackRecordingHud
  *  支线：跟随中用户拖动地图后点击 = 恢复跟随（NavigatorEvent.lastInputEvent 判定）
  */
 @Composable
-fun TrackGlobeView(
+fun wwGlobeView(
     modifier: Modifier = Modifier,
     // ---- 初始相机 ----
     initialCenterLat: Double = 39.909,

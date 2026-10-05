@@ -147,6 +147,10 @@ fun HomeScreen(viewModel: HomeViewModel = koinViewModel()) {
                             context.sendInternalBroadcast(TrackIntents.ACTION_TOGGLE)
                             return@GeoKoriCenter
                         }
+                        if (destination == AppDestinations.PROFILE) {
+                            context.sendInternalBroadcast(TrackIntents.ACTION_SHOW_HISTORY)
+                            return@GeoKoriCenter
+                        }
                         if (destination != AppDestinations.GeoKori) {
                             val pluginId = when (destination) {
                                 AppDestinations.SETTING -> HomeViewModel.PLUGIN_SETTING

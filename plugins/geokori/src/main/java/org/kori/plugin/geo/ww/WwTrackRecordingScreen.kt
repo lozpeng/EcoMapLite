@@ -1,4 +1,4 @@
-package org.kori.plugin.geo
+package org.kori.plugin.geo.ww
 
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -16,14 +16,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.combo.core.utils.startPluginActivity
+import org.kori.plugin.geo.TrackUiEvents
 import org.kori.plugin.geo.gnss.SatelliteStatusScreen
-import org.kori.plugin.geo.map.MapConfig
-import org.kori.plugin.geo.map.MapLibreMapView
 import org.kori.plugin.geo.service.TrackMediaCaptureActivity
 import org.kori.plugin.geo.service.VideoCaptureActivity
 import org.kori.plugin.geo.track.RecordingPermissions
-import org.kori.plugin.geo.track.TrackPlaybackScreen
 import org.kori.plugin.geo.track.TrackMapCallbacks
+import org.kori.plugin.geo.track.TrackPlaybackScreen
 import org.kori.plugin.geo.track.TrackRecordingEngine
 import org.kori.plugin.geo.track.di.TrackRecordingViewModel
 import org.kori.plugin.geo.track.di.TrackSession
@@ -31,47 +30,25 @@ import org.kori.plugin.geo.track.ui.TrackHistoryScreen
 import org.kori.plugin.geo.track.ui.TrackTimelineScreen
 
 /**
- * 轨迹记录屏幕（薄层）。
+ * WorldWind 版轨迹记录屏幕（对应 MapLibre 版 [org.kori.plugin.geo.TrackRecordingScreen]）。
  *
- * ## 交互
+ * 薄层结构完全一致：3D 地球 + 权限闸门 + HUD + 历史/回放/时间线覆盖层。
+ * 引擎、HUD、回调、媒体 Activity 全部复用，只有地图内核换成 [wwGlobeView]。
  *
- *  · 记录面板：MapLibreMapView 内部按 Engine 状态自动显示/隐藏
- *  · 媒体采集：`startPluginActivity` 走 ComboLite 代理
- *  · 定位按钮**长按**：弹出 [SatelliteStatusScreen] 卫星状态覆盖层
- *  · ★ 开始记录前的权限闸门（后台记录前提）：
- *     1. 定位 + 通知权限 → 普通弹框
- *     2. 后台定位（"始终允许"）→ 未授予时引导到系统设置页
- *  · ★【新增】响应 home 的 ACTION_SHOW_HISTORY 命令：弹出 TrackHistoryScreen
- *    （TrackUiEvents 与本品同包 org.kori.plugin.geo，无需 import）
- *
- * ## 使用
- *
- * ```kotlin
- * TrackRecordingScreen()
- * ```
+ * ★【新增】响应 home 的 ACTION_SHOW_HISTORY 命令：弹出 TrackHistoryScreen
+ *   （经 org.kori.plugin.geo.TrackUiEvents 事件总线，与 MapLibre 版共用）。
  */
 @Composable
-fun TrackRecordingScreen(
+fun WwTrackRecordingScreen(
     onOpenTrackList: () -> Unit = {},
 ) {
     val context = LocalContext.current
-
-    // 手动构造 ViewModel（pluginModule 为空，不能用 koinViewModel()）
-    val viewModel = remember {
-        TrackRecordingViewModel(context.applicationContext)
-    }
+    val viewModel = remember { TrackRecordingViewModel(context.applicationContext) }
     val state by viewModel.state.collectAsState()
 
-    // ★ 卫星状态覆盖层开关（定位按钮长按触发）
     var showSatelliteStatus by remember { mutableStateOf(false) }
-
-    // ★ 历史轨迹浏览覆盖层开关（面板"历史"按钮 或 home 的 ACTION_SHOW_HISTORY 触发）
     var showTrackHistory by remember { mutableStateOf(false) }
-
-    // ★ 轨迹回放（全屏沉浸式回放屏）
     var playbackSession by remember { mutableStateOf<TrackSession?>(null) }
-
-    // ★ 轨迹时间线
     var timelineSession by remember { mutableStateOf<TrackSession?>(null) }
 
     // ★【新增】响应"显示历史"命令（home 广播 → TrackCommandReceiver → TrackUiEvents）
@@ -81,9 +58,7 @@ fun TrackRecordingScreen(
         }
     }
 
-    // =========================================================================
-    // ★ 权限闸门：开始记录前确保 定位 + 通知 + 后台定位
-    // =========================================================================
+    // ---- 权限闸门（与 MapLibre 版相同流程）----
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { result ->
@@ -101,23 +76,15 @@ fun TrackRecordingScreen(
             RecordingPermissions.openAppSettings(context)
             return@rememberLauncherForActivityResult
         }
-        // 全部就绪 → 开始记录
         viewModel.toggleRecording()
     }
 
-    /** 面板"开始/结束"的统一入口：先过权限闸门。 */
     val onToggleRecording: () -> Unit = {
         when {
-            // 结束记录不需要权限检查
             state.recording -> viewModel.toggleRecording()
-
-            // 缺定位/通知 → 弹框申请
             !RecordingPermissions.hasLocation(context) ||
-                    !RecordingPermissions.hasNotifications(context) -> {
+                    !RecordingPermissions.hasNotifications(context) ->
                 permissionLauncher.launch(RecordingPermissions.requestablePermissions())
-            }
-
-            // 缺后台定位 → 引导系统设置（"始终允许"无法弹框授予）
             !RecordingPermissions.hasBackgroundLocation(context) -> {
                 Toast.makeText(
                     context,
@@ -126,44 +93,22 @@ fun TrackRecordingScreen(
                 ).show()
                 RecordingPermissions.openAppSettings(context)
             }
-
             else -> viewModel.toggleRecording()
         }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        MapLibreMapView(
+        wwGlobeView(
             modifier = Modifier.fillMaxSize(),
-            config = MapConfig(
-                useCustomLocationPipeline = true,
-                customLocationTrackingZoom = 17.0,
-                showLocationButton = true,
-                showLayerButton = true,
-                // 避让宿主底部导航栏（按宿主底栏实际高度调整）
-                trackPanelBottomPadding = 130.dp,
-                locationButtonOffsetY = (-40).dp,
-            ),
-            // 位置源：Engine 的 fix 流
             externalLocationFixes = TrackRecordingEngine.trackerFixes,
-            // 实时轨迹数据
             liveTrackPoints = state.liveTrackPoints,
             liveSmoothPoints = state.liveSmoothPoints,
             liveTrackMedia = state.liveMedia,
-            // ★ 历史轨迹叠加层（历史浏览加载到地图）
             historySegments = state.historySegments,
-            // ★ 定位按钮长按 → 卫星状态
-            onLocationButtonLongClick = {
-                showSatelliteStatus = true
-            },
-            // 记录面板回调
+            hudBottomPadding = 130.dp,   // 避让宿主底栏（按实际调整）
             trackPanelCallbacks = TrackMapCallbacks(
-                // 开始 / 结束（★ 经过权限闸门）
                 onToggle = onToggleRecording,
-
-                // 暂停 / 继续
                 onPauseToggle = { viewModel.togglePause() },
-
-                // 媒体采集：★ 必须走 ComboLite 的 startPluginActivity
                 onPhoto = {
                     context.startPluginActivity(TrackMediaCaptureActivity::class.java) {
                         putExtra(
@@ -183,50 +128,28 @@ fun TrackRecordingScreen(
                 onVideo = {
                     context.startPluginActivity(VideoCaptureActivity::class.java)
                 },
-
-                // ★ 历史轨迹浏览
                 onOpenHistory = {
                     showTrackHistory = true
                 },
-
                 onOpenDetail = onOpenTrackList,
             ),
         )
 
-        // ★ 卫星状态覆盖层（定位按钮长按打开）
         if (showSatelliteStatus) {
-            SatelliteStatusScreen(
-                onClose = { showSatelliteStatus = false },
-            )
+            SatelliteStatusScreen(onClose = { showSatelliteStatus = false })
         }
-
-        // ★ 历史轨迹浏览（面板"历史"按钮 / home 的 ACTION_SHOW_HISTORY 打开）
         if (showTrackHistory) {
             TrackHistoryScreen(
                 onClose = { showTrackHistory = false },
-                onPlay = { session ->
-                    playbackSession = session
-                },
-                onTimeline = { session ->
-                    timelineSession = session
-                },
+                onPlay = { playbackSession = it },
+                onTimeline = { timelineSession = it },
             )
         }
-
-        // ★ 轨迹回放（全屏沉浸式）
         playbackSession?.let { session ->
-            TrackPlaybackScreen(
-                session = session,
-                onClose = { playbackSession = null },
-            )
+            TrackPlaybackScreen(session = session, onClose = { playbackSession = null })
         }
-
-        // ★ 轨迹时间线
         timelineSession?.let { session ->
-            TrackTimelineScreen(
-                session = session,
-                onClose = { timelineSession = null },
-            )
+            TrackTimelineScreen(session = session, onClose = { timelineSession = null })
         }
     }
 }

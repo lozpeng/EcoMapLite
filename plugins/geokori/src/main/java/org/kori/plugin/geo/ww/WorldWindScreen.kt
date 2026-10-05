@@ -31,7 +31,7 @@ import org.kori.plugin.geo.track.ui.TrackTimelineScreen
  * WorldWind 版轨迹记录屏幕（对应 MapLibre 版 [org.kori.plugin.geo.TrackRecordingScreen]）。
  *
  * 薄层结构完全一致：3D 地球 + 权限闸门 + HUD + 历史/回放/时间线覆盖层。
- * 引擎、HUD、回调、媒体 Activity 全部复用，只有地图内核换成 [TrackGlobeView]。
+ * 引擎、HUD、回调、媒体 Activity 全部复用，只有地图内核换成 [wwGlobeView]。
  */
 @Composable
 fun WorldWindowScreen(
@@ -86,7 +86,7 @@ fun WorldWindowScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        TrackGlobeView(
+        wwGlobeView(
             modifier = Modifier.fillMaxSize(),
             externalLocationFixes = TrackRecordingEngine.trackerFixes,
             liveTrackPoints = state.liveTrackPoints,
