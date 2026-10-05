@@ -225,6 +225,6 @@ object MapLayerManager {
     private var appContextRef: Context? = null
 
     private fun update(fullId: String, state: MapLayerState) {
-        _states.value = _states.value + (fullId to state)
+        _states.value += (fullId to state)
     }
 }

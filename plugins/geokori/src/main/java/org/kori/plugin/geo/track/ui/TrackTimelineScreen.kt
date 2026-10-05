@@ -1,7 +1,13 @@
 package org.kori.plugin.geo.track.ui
 
+import android.media.MediaPlayer
+import android.graphics.SurfaceTexture
+import android.view.Surface
+import android.view.TextureView
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -12,7 +18,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -26,9 +31,12 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -37,6 +45,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -48,15 +58,20 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.Dialog
 import coil3.compose.AsyncImage
 import org.kori.plugin.geo.math.GeoMath
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.kori.plugin.geo.track.TrackEvent
 import org.kori.plugin.geo.track.TrackEventType
@@ -72,7 +87,7 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * 轨迹时间线界面 v4 —— 左轴分段 + 右侧信息卡。
+ * 轨迹时间线界面 v8 —— 左轴分段 + 右侧信息卡。
  * 分段号角标挂在节点圆点左上角（白底深色数字，任何速度色下清晰可辨）。
  *
  * ## 布局
@@ -92,7 +107,9 @@ import java.util.Locale
  *  · **起点 / 终点**：旗标 + 完整时间
  *  · **暂停**：停留时长
  *  · **轨迹点**：距离 · 耗时 · 均速（无媒体时的默认信息栏）
- *  · **媒体**：照片缩略图（点击放大）、音视频（点击播放）
+ *  · **媒体**：经纬度显示在标题行（**长按复制坐标**）；照片点击放大；
+ *    **音频就地播放**（内嵌播放条）；**视频小窗预览**（默认待播不透底，中央按钮播放/暂停，
+ *    点击全屏角标全屏——与照片查看同一交互）
  *
  * 全部按时间倒序渲染，分段号按时间正序编号（起点为 #1）。顶部含 **分享/导出** 按钮。
  */
@@ -116,6 +133,7 @@ fun TrackTimelineScreen(
     }
 
     var viewerPhoto by remember { mutableStateOf<TrackMediaRecord?>(null) }
+    var viewerVideo by remember { mutableStateOf<TrackMediaRecord?>(null) }
     var exportTarget by remember { mutableStateOf(false) }
 
     val dateFmt = remember { SimpleDateFormat("yyyy年MM月dd日 HH:mm", Locale.getDefault()) }
@@ -168,7 +186,14 @@ fun TrackTimelineScreen(
                     val rowHeight: Dp? = if (next == null) {
                         null // 末行（起点）以下没有线 —— 线段终于起点
                     } else {
-                        val minH = if (item is TlItem.Media) 108.dp else 104.dp
+                        val minH = when (item) {
+                            is TlItem.Media -> when (item.record.type) {
+                                TrackMediaRecord.Type.VIDEO -> 224.dp // 小窗预览 + 标题行
+                                TrackMediaRecord.Type.AUDIO -> 132.dp // 播放条 + 标题行
+                                TrackMediaRecord.Type.PHOTO -> 108.dp
+                            }
+                            else -> 104.dp
+                        }
                         timeline.lineHeightsDp[index].dp.coerceAtLeast(minH)
                     }
                     TimelineRow(
@@ -177,9 +202,9 @@ fun TrackTimelineScreen(
                         segNo = timeline.items.size - index,
                         isLast = index == timeline.items.lastIndex,
                         rowHeight = rowHeight,
-                        photoFile = if (item is TlItem.Media && item.record.type == TrackMediaRecord.Type.PHOTO)
-                            session.resolve(item.record.filePath) else null,
-                        onMediaClick = { record -> openMedia(context, session, record) { viewerPhoto = it } },
+                        mediaFile = if (item is TlItem.Media) session.resolve(item.record.filePath) else null,
+                        onViewPhoto = { viewerPhoto = it },
+                        onExpandVideo = { viewerVideo = it },
                     )
                 }
             }
@@ -204,6 +229,14 @@ fun TrackTimelineScreen(
                 )
             }
         }
+    }
+
+    // ---- 视频全屏播放（与照片查看同一交互：点击画面关闭） ----
+    viewerVideo?.let { record ->
+        VideoViewerDialog(
+            file = session.resolve(record.filePath),
+            onDismiss = { viewerVideo = null },
+        )
     }
 
     // ---- 导出格式对话框 ----
@@ -471,8 +504,9 @@ private fun TimelineRow(
     segNo: Int,
     isLast: Boolean,
     rowHeight: Dp?,
-    photoFile: File?,
-    onMediaClick: (TrackMediaRecord) -> Unit,
+    mediaFile: File?,
+    onViewPhoto: (TrackMediaRecord) -> Unit,
+    onExpandVideo: (TrackMediaRecord) -> Unit,
 ) {
     val timeFmt = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
     val dateTimeFmt = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()) }
@@ -511,8 +545,9 @@ private fun TimelineRow(
             item = item,
             color = color,
             titleTime = titleTime,
-            photoFile = photoFile,
-            onMediaClick = onMediaClick,
+            mediaFile = mediaFile,
+            onViewPhoto = onViewPhoto,
+            onExpandVideo = onExpandVideo,
         )
     }
 }
@@ -532,39 +567,6 @@ private fun NodeWithBadge(no: Int, color: Color) {
         )
     }
 }
-/**
- * 节点 + 分段号角标：圆点居中，白底深色数字的小角标压在其左上角（类似通知角标）。
- * 角标用白底 + [darkened] 主色数字 —— 速度快时的青绿、慢时的紫，压深后都清晰可辨。
- */
-@Composable
-private fun NodeWithBadge2(no: Int, color: Color) {
-    Box(modifier = Modifier.size(32.dp)) {
-        // 节点圆点
-        Box(
-            modifier = Modifier
-                .size(22.dp)
-                .align(Alignment.Center)
-                .background(color, CircleShape),
-        )
-        // 分段号角标：白底圆角小方块 + 加深主色数字
-        Box(
-            modifier = Modifier
-                .size(17.dp)
-                .align(Alignment.TopStart)
-                .offset(x = (-1).dp, y = (-1).dp)
-                .clip(RoundedCornerShape(5.dp))
-                .background(Color.White),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                "$no",
-                color = darkened(color),
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
-            )
-        }
-    }
-}
 
 /** 右侧信息卡：浅色圆角底（条目主色 10%），标题行 = 时间 + 类型标签。 */
 @Composable
@@ -572,8 +574,9 @@ private fun RowScope.InfoCard(
     item: TlItem,
     color: Color,
     titleTime: String,
-    photoFile: File?,
-    onMediaClick: (TrackMediaRecord) -> Unit,
+    mediaFile: File?,
+    onViewPhoto: (TrackMediaRecord) -> Unit,
+    onExpandVideo: (TrackMediaRecord) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -592,6 +595,11 @@ private fun RowScope.InfoCard(
             )
             Spacer(modifier = Modifier.width(8.dp))
             TypeChip(label = typeLabel(item), color = color)
+            // 媒体条目：标题行内显示经纬度（不换行），长按复制坐标
+            if (item is TlItem.Media) {
+                Spacer(modifier = Modifier.width(8.dp))
+                MediaCoordText(item.record)
+            }
             Spacer(modifier = Modifier.weight(1f))
             when (item) {
                 is TlItem.Start ->
@@ -618,7 +626,7 @@ private fun RowScope.InfoCard(
                 StatLine("均速", "%.1f km/h".format(item.speedKmh))
             }
 
-            is TlItem.Media -> MediaContent(item.record, photoFile, onMediaClick)
+            is TlItem.Media -> MediaContent(item.record, mediaFile, onViewPhoto, onExpandVideo)
         }
     }
 }
@@ -668,79 +676,483 @@ private fun StatLine(label: String, value: String) {
     }
 }
 
-/** 媒体卡体：照片缩略图 / 音视频图标 + 时长（信息卡内使用，不带外框）。 */
+/**
+ * 媒体卡体（信息卡内使用）：
+ *  · 顶部统一显示经纬度坐标（[MediaCoordLine]，点击复制到剪贴板）
+ *  · **照片**：缩略图，点击进入全屏查看器（[onViewPhoto]）
+ *  · **音频**：[AudioPlayerBar] 就地播放，不跳出页面
+ *  · **视频**：[VideoPreviewTile] 小窗预览，默认待播，中央按钮播放/暂停，角标全屏
+ */
 @Composable
 private fun MediaContent(
     record: TrackMediaRecord,
-    photoFile: File?,
-    onClick: (TrackMediaRecord) -> Unit,
+    mediaFile: File?,
+    onViewPhoto: (TrackMediaRecord) -> Unit,
+    onExpandVideo: (TrackMediaRecord) -> Unit,
 ) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
-            .clickable { onClick(record) }
-            .padding(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        when (record.type) {
-            TrackMediaRecord.Type.PHOTO -> {
-                Box(
-                    modifier = Modifier
-                        .size(56.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(Color.Black),
-                ) {
-                    if (photoFile != null) {
-                        AsyncImage(
-                            model = photoFile,
-                            contentDescription = "照片",
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.Crop,
-                        )
-                    } else {
-                        Icon(
-                            Icons.Filled.Image,
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.align(Alignment.Center),
-                        )
-                    }
+    when (record.type) {
+        TrackMediaRecord.Type.PHOTO -> Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+                .clickable { onViewPhoto(record) }
+                .padding(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color.Black),
+            ) {
+                if (mediaFile != null) {
+                    AsyncImage(
+                        model = mediaFile,
+                        contentDescription = "照片",
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Crop,
+                    )
+                } else {
+                    Icon(
+                        Icons.Filled.Image,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.align(Alignment.Center),
+                    )
                 }
             }
-
-            TrackMediaRecord.Type.VIDEO -> MediaBadge(Icons.Filled.PlayArrow, "视频", C_MEDIA)
-            TrackMediaRecord.Type.AUDIO -> MediaBadge(Icons.Filled.Mic, "录音", Color(0xFF00897B))
-        }
-
-        Spacer(modifier = Modifier.width(10.dp))
-
-        Column(modifier = Modifier.weight(1f)) {
+            Spacer(modifier = Modifier.width(10.dp))
             Text(
-                text = when (record.type) {
-                    TrackMediaRecord.Type.PHOTO -> "照片"
-                    TrackMediaRecord.Type.VIDEO -> "视频"
-                    TrackMediaRecord.Type.AUDIO -> "录音"
-                },
+                "照片",
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Medium,
+                modifier = Modifier.weight(1f),
             )
-            record.durationSec?.let {
-                Text(
-                    "%.1f 秒".format(it),
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+            Text(
+                "查看",
+                color = MaterialTheme.colorScheme.primary,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+            )
+        }
+
+        TrackMediaRecord.Type.AUDIO -> AudioPlayerBar(file = mediaFile, accent = Color(0xFF00897B))
+
+        TrackMediaRecord.Type.VIDEO -> VideoPreviewTile(
+            file = mediaFile,
+            onExpand = { onExpandVideo(record) },
+        )
+    }
+}
+
+/**
+ * 标题行经纬度：不换行跟在类型标签后；**长按**复制 `lat,lng`（仅坐标，不含其他文字），
+ * 复制成功后文字短暂变主题色作为反馈。
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun MediaCoordText(record: TrackMediaRecord) {
+    val clipboard = LocalClipboardManager.current
+    var copied by remember { mutableStateOf(false) }
+
+    LaunchedEffect(copied) {
+        if (copied) {
+            delay(1200)
+            copied = false
+        }
+    }
+
+    val lat = record.lat
+    val lng = record.lng
+    // 字段非空 Double；0,0 是"未定位"哨兵值（几内亚湾），视为无效坐标
+    val hasCoord = !(lat == 0.0 && lng == 0.0)
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = if (hasCoord) "%.5f, %.5f".format(lat, lng) else "无坐标",
+            fontSize = 11.sp,
+            maxLines = 1,
+            color = if (copied) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.combinedClickable(
+                enabled = hasCoord,
+                onClick = { /* 标题行不可点，避免误触 */ },
+                onLongClick = {
+                    clipboard.setText(AnnotatedString("%.6f,%.6f".format(lat, lng)))
+                    copied = true
+                },
+            ),
+        )
+        // 上一版同款"已复制"提示
+        if (copied) {
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+                "已复制",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+    }
+}
+
+/**
+ * 就地音频播放条：播放/暂停 + 进度 + 已播/总时长。
+ *
+ * [MediaPlayer] 随条目 remember，滑出 LazyColumn 即 release（[DisposableEffect]）；
+ * 重进列表重新加载。播放进度 200ms 轮询刷新。
+ */
+@Composable
+private fun AudioPlayerBar(file: File?, accent: Color) {
+    if (file == null) {
+        Text("音频文件缺失", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        return
+    }
+
+    val player = remember(file) { MediaPlayer() }
+    var prepared by remember { mutableStateOf(false) }
+    var failed by remember { mutableStateOf(false) }
+    var playing by remember { mutableStateOf(false) }
+    var posMs by remember { mutableLongStateOf(0L) }
+    var durMs by remember { mutableLongStateOf(0L) }
+
+    DisposableEffect(file) {
+        val mp = player
+        try {
+            mp.setDataSource(file.absolutePath)
+            mp.setOnPreparedListener { pos -> durMs = pos.duration.toLong(); prepared = true }
+            mp.setOnCompletionListener { playing = false; posMs = 0L }
+            mp.setOnErrorListener { _, _, _ -> failed = true; true }
+            mp.prepareAsync()
+        } catch (e: Exception) {
+            failed = true
+        }
+        onDispose { runCatching { mp.release() } }
+    }
+
+    // 播放中轮询进度
+    LaunchedEffect(playing) {
+        while (playing) {
+            posMs = runCatching { player.currentPosition.toLong() }.getOrDefault(0L)
+            delay(200)
+        }
+    }
+
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        if (failed) {
+            Icon(
+                Icons.Filled.Mic,
+                contentDescription = "播放失败",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("无法播放", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            return@Row
+        }
+
+        // 播放 / 暂停
+        Box(
+            modifier = Modifier
+                .size(32.dp)
+                .clip(CircleShape)
+                .background(accent)
+                .clickable(enabled = prepared) {
+                    if (playing) {
+                        player.pause()
+                        playing = false
+                    } else {
+                        if (durMs > 0 && posMs >= durMs) {
+                            player.seekTo(0)
+                            posMs = 0L
+                        }
+                        player.start()
+                        playing = true
+                    }
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            if (!prepared) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(16.dp),
+                    color = Color.White,
+                    strokeWidth = 2.dp,
+                )
+            } else {
+                Icon(
+                    if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                    contentDescription = if (playing) "暂停" else "播放",
+                    tint = Color.White,
+                    modifier = Modifier.size(18.dp),
                 )
             }
         }
 
-        Text(
-            if (record.type == TrackMediaRecord.Type.PHOTO) "查看" else "播放",
-            color = MaterialTheme.colorScheme.primary,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Medium,
+        Spacer(modifier = Modifier.width(8.dp))
+
+        // 进度条
+        Slider(
+            value = if (durMs > 0) posMs.toFloat() / durMs else 0f,
+            onValueChange = { v ->
+                val target = (v * durMs).toLong()
+                runCatching { player.seekTo(target.toInt()) }
+                posMs = target
+            },
+            modifier = Modifier.weight(1f),
+            enabled = prepared,
         )
+
+        Spacer(modifier = Modifier.width(8.dp))
+
+        // 已播 / 总时长
+        Text(
+            "${formatClock(posMs)} / ${formatClock(durMs)}",
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/**
+ * 视频小窗预览：黑底圆角窗格，**默认不播放**——就绪后中央显示播放按钮；
+ * 点中央按钮播放/暂停，点右上角"⛶ 全屏"角标全屏播放（与照片查看同一交互）。
+ *
+ * 用 [TextureView] 而非 SurfaceView：TextureView 是正常视图合成，
+ * **不会把下层地图透出来**（SurfaceView 打孔机制在部分机型上 setFormat(OPAQUE) 不生效）。
+ * 滑出 LazyColumn 即 release。
+ */
+@Composable
+private fun VideoPreviewTile(file: File?, onExpand: () -> Unit) {
+    if (file == null) {
+        Text("视频文件缺失", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        return
+    }
+
+    val player = remember(file) { MediaPlayer() }
+    var prepared by remember { mutableStateOf(false) }
+    var playing by remember { mutableStateOf(false) }
+    // 用户点播放时纹理尚未就绪：先记下，surface 可用后自动 start
+    var pendingStart by remember { mutableStateOf(false) }
+    // 当前绑定的 surface，纹理销毁时一并 release
+    var playerSurface by remember { mutableStateOf<Surface?>(null) }
+
+    DisposableEffect(file) {
+        val mp = player
+        try {
+            mp.setDataSource(file.absolutePath)
+            // 就绪后不自动播放，等用户点中央播放按钮
+            mp.setOnPreparedListener {
+                prepared = true
+                // 用户在就绪前点了播放：surface 已就绪则补 start
+                if (pendingStart && playerSurface != null) {
+                    pendingStart = false
+                    runCatching { mp.start() }
+                    playing = true
+                }
+            }
+            mp.setOnCompletionListener { playing = false }
+            mp.setOnErrorListener { _, _, _ -> prepared = false; true }
+            mp.prepareAsync()
+        } catch (e: Exception) {
+            prepared = false
+        }
+        onDispose {
+            runCatching { mp.release() }
+            playerSurface?.release()
+            playerSurface = null
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(150.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color.Black),
+    ) {
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx ->
+                TextureView(ctx).apply {
+                    surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                        override fun onSurfaceTextureAvailable(
+                            st: SurfaceTexture,
+                            width: Int,
+                            height: Int,
+                        ) {
+                            val s = Surface(st)
+                            playerSurface?.release()
+                            playerSurface = s
+                            runCatching { player.setSurface(s) }
+                            if (pendingStart) {
+                                pendingStart = false
+                                runCatching { player.start() }
+                                playing = true
+                            }
+                        }
+
+                        override fun onSurfaceTextureSizeChanged(
+                            st: SurfaceTexture,
+                            width: Int,
+                            height: Int,
+                        ) = Unit
+
+                        override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                            runCatching { player.setSurface(null) }
+                            playerSurface?.release()
+                            playerSurface = null
+                            return true
+                        }
+
+                        override fun onSurfaceTextureUpdated(st: SurfaceTexture) = Unit
+                    }
+                }
+            },
+        )
+
+        if (!prepared) {
+            CircularProgressIndicator(
+                modifier = Modifier.align(Alignment.Center),
+                color = Color.White,
+            )
+        } else {
+            // 中央播放 / 暂停按钮
+            Box(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .size(44.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.5f))
+                    .clickable {
+                        if (playing) {
+                            runCatching { player.pause() }
+                            playing = false
+                        } else if (playerSurface != null && prepared) {
+                            runCatching { player.start() }
+                            playing = true
+                        } else {
+                            pendingStart = true // surface/解码未就绪，等回调里 start
+                        }
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                    contentDescription = if (playing) "暂停" else "播放",
+                    tint = Color.White,
+                    modifier = Modifier.size(28.dp),
+                )
+            }
+        }
+
+        // 全屏角标：独立点击，进全屏前暂停小窗播放
+        Text(
+            "⛶ 全屏",
+            color = Color.White,
+            fontSize = 11.sp,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(6.dp)
+                .clip(RoundedCornerShape(4.dp))
+                .background(Color.Black.copy(alpha = 0.45f))
+                .clickable {
+                    if (playing) {
+                        runCatching { player.pause() }
+                        playing = false
+                    }
+                    onExpand()
+                }
+                .padding(horizontal = 6.dp, vertical = 2.dp),
+        )
+    }
+}
+
+/**
+ * 全屏视频查看器：与照片查看同一交互（点击画面关闭），自动播放。
+ * 对话框全宽全高，关闭即 release。
+ */
+@Composable
+private fun VideoViewerDialog(file: File, onDismiss: () -> Unit) {
+    val player = remember { MediaPlayer() }
+    var prepared by remember { mutableStateOf(false) }
+    var playerSurface by remember { mutableStateOf<Surface?>(null) }
+
+    DisposableEffect(Unit) {
+        val mp = player
+        try {
+            mp.setDataSource(file.absolutePath)
+            // ★ 修复黑屏：两个回调到达顺序不确定，任一个到达时都检查
+            //   "已就绪 && surface 已绑定"，满足即 start
+            mp.setOnPreparedListener {
+                prepared = true
+                if (playerSurface != null) runCatching { mp.start() }
+            }
+            mp.setOnErrorListener { _, _, _ -> true }
+            mp.prepareAsync()
+        } catch (e: Exception) {
+            onDismiss()
+        }
+        onDispose {
+            runCatching { mp.release() }
+            playerSurface?.release()
+            playerSurface = null
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+                .clickable { onDismiss() },
+        ) {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { ctx ->
+                    TextureView(ctx).apply {
+                        surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                            override fun onSurfaceTextureAvailable(
+                                st: SurfaceTexture,
+                                width: Int,
+                                height: Int,
+                            ) {
+                                val s = Surface(st)
+                                playerSurface?.release()
+                                playerSurface = s
+                                runCatching { player.setSurface(s) }
+                                // ★ 修复黑屏：surface 晚于 prepared 就绪时，在这里补 start
+                                if (prepared) runCatching { player.start() }
+                            }
+
+                            override fun onSurfaceTextureSizeChanged(
+                                st: SurfaceTexture,
+                                width: Int,
+                                height: Int,
+                            ) = Unit
+
+                            override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                                runCatching { player.setSurface(null) }
+                                playerSurface?.release()
+                                playerSurface = null
+                                return true
+                            }
+
+                            override fun onSurfaceTextureUpdated(st: SurfaceTexture) = Unit
+                        }
+                    }
+                },
+            )
+
+            if (!prepared) {
+                CircularProgressIndicator(
+                    modifier = Modifier.align(Alignment.Center),
+                    color = Color.White,
+                )
+            }
+        }
     }
 }
 
@@ -779,6 +1191,15 @@ private fun formatDistance(meters: Double): String =
     if (meters >= 1000.0) "%.2f km".format(meters / 1000.0)
     else "%d m".format(meters.toInt())
 
+/** 播放条时钟：`mm:ss` / `h:mm:ss`。 */
+private fun formatClock(ms: Long): String {
+    val totalSec = (ms / 1000).coerceAtLeast(0)
+    val h = totalSec / 3600
+    val m = (totalSec % 3600) / 60
+    val s = totalSec % 60
+    return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%02d:%02d".format(m, s)
+}
+
 /** 时长格式化：`4分32秒` / `1时05分`。 */
 private fun formatSpan(ms: Long): String {
     val totalSec = ms / 1000
@@ -792,25 +1213,6 @@ private fun formatSpan(ms: Long): String {
     }
 }
 
-/** 媒体点击分流：照片进内置查看器，音视频交给系统播放器。 */
-private fun openMedia(
-    context: android.content.Context,
-    session: TrackSession,
-    record: TrackMediaRecord,
-    onViewPhoto: (TrackMediaRecord) -> Unit,
-) {
-    when (record.type) {
-        TrackMediaRecord.Type.PHOTO -> onViewPhoto(record)
-        else -> {
-            val file = session.resolve(record.filePath)
-            val mime = when (record.type) {
-                TrackMediaRecord.Type.VIDEO -> "video/mp4"
-                else -> "audio/mp4"
-            }
-            TrackShare.openMedia(context, file, mime)
-        }
-    }
-}
 
 /** 导出格式选择对话框。 */
 @Composable
@@ -831,8 +1233,7 @@ private fun ExportFormatDialog(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(modifier = Modifier.height(8.dp))
-                @Suppress("DEPRECATION")
-                TrackExporter.Format.values().forEach { f ->
+                TrackExporter.Format.entries.forEach { f ->
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         RadioButton(selected = format == f, onClick = { format = f })
                         Text(f.name)

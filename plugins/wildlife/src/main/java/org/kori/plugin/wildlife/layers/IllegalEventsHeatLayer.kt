@@ -2,7 +2,6 @@ package org.kori.plugin.wildlife.layers
 
 import android.content.Context
 import android.graphics.Color
-import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -27,10 +26,10 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * 盗猎事件热力图图层（合并版：渲染实现 + 框架 [MapLayer] 生命周期一体）。
+ * 盗猎事件热力图图层（合并版：渲染实现 + 框架 [LibreMapLayer] 生命周期一体）。
  *
  * 相对拆分版的变化：
- *  · 直接继承 [MapLayer] —— 不再需要 IllegalEventsMapLayer 转发壳
+ *  · 直接继承 [LibreMapLayer] —— 不再需要 IllegalEventsMapLayer 转发壳
  *  · Session 由 [MapLayerManager] 在 toggle 时自动注入 [onAttach]
  *  · 加载结果直接调 notifyLoaded()/notifyFailed()，回调参数删除
  *  · onDetach 负责精确移除 source/layer；close() 由基类收尾
@@ -80,7 +79,6 @@ class IllegalEventsHeatLayer : LibreMapLayer() {
             if (c == null || t == 0L) return null
             val age = System.currentTimeMillis() - t
             if (age >= CACHE_TTL_MS) return null
-            Log.d(TAG, "cache hit, age=${age / 1000}s")
             return c
         }
 
@@ -207,36 +205,29 @@ class IllegalEventsHeatLayer : LibreMapLayer() {
             setupLayers(cached)
             applyVisibilityByZoom(map?.cameraPosition?.zoom ?: 0.0, force = true)
             isLoaded = true
-            Log.d(TAG, "setup from cache, isLoaded=true")
             notifyLoaded()
             return
         }
 
         scope.launch(Dispatchers.IO) {
             try {
-                Log.d(TAG, "cache miss, fetching from API...")
                 val collection = FeatureCollection.fromJson(fetchGeoJsonFromApi())
                 val featureCount = collection.features()?.size ?: 0
-                Log.d(TAG, "Parsed $featureCount features")
-
                 cachePut(collection)
 
                 withContext(Dispatchers.Main) {
                     // 已卸载（close/detach）就只留缓存，不动地图
                     if (!isActive) {
-                        Log.d(TAG, "detached during load, cache kept for next open")
                         return@withContext
                     }
                     setupLayers(collection)
                     applyVisibilityByZoom(map?.cameraPosition?.zoom ?: 0.0, force = true)
                     isLoaded = true
-                    Log.d(TAG, "setup complete, isLoaded=true")
                     notifyLoaded()
                 }
             } catch (ce: CancellationException) {
                 throw ce
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to load data", e)
                 withContext(Dispatchers.Main) { notifyFailed() }
             }
         }
@@ -265,7 +256,6 @@ class IllegalEventsHeatLayer : LibreMapLayer() {
         removeMapObjects()
 
         if (collection.features().isNullOrEmpty()) {
-            Log.w(TAG, "No features to display")
             return
         }
 
@@ -282,7 +272,6 @@ class IllegalEventsHeatLayer : LibreMapLayer() {
         currentSession()?.addLayer(buildHeatmapLayer())
         currentSession()?.addLayer(buildCircleLayer())
         currentSession()?.addLayer(buildSymbolLayer())
-        Log.d(TAG, "source + 3 layers added via session")
     }
 
     private fun buildHeatmapLayer(): HeatmapLayer =
