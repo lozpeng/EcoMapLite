@@ -59,6 +59,7 @@ import org.cwcc.open.geokori.ui.material3.center.model.PoiDetailCardV2
 import org.cwcc.open.geokori.ui.material3.center.model.PoiItem
 import org.cwcc.open.geokori.ui.material3.center.model.PoiListItemV2
 import org.cwcc.open.geokori.ui.material3.center.model.QuickAction
+import org.cwcc.open.geokori.ui.material3.center.model.QuickActionSpec
 import org.cwcc.open.geokori.ui.material3.center.model.SearchHeaderV2
 
 /**
@@ -86,6 +87,9 @@ fun rememberGeoKoriSheetState(
 /**
  * GeoKori 底部 Sheet + 详情弹窗一体化组件。
  *
+ * ★ quickActions 参数类型放宽为 [QuickActionSpec] —— 插件自定义 Action
+ *   （如 wildlife 的 WfBizAction）可直接接入。
+ *
  * @param modifier 外部修饰器
  * @param sheetState BottomSheet 状态，可由外部传入以精细控制
  * @param quickActions 快捷操作按钮列表
@@ -106,7 +110,7 @@ fun rememberGeoKoriSheetState(
 fun GeoKoriCenterSheet(
     modifier: Modifier = Modifier,
     sheetState: FlexibleSheetState = rememberGeoKoriSheetState(),
-    quickActions: List<QuickAction> = defaultQuickActions(),
+    quickActions: List<QuickActionSpec> = defaultQuickActions(),
     poiList: List<PoiItem> = defaultPoiList(),
     destination: Any? = null,
     isDestinationSheetVisible: Boolean = false,
@@ -116,146 +120,140 @@ fun GeoKoriCenterSheet(
     sheetHorizontalAlignment: Alignment.Horizontal? = null,
     onPoiSelected: (PoiItem) -> Unit = {},
     onPoiNavigate: (PoiItem) -> Unit = {},
-    onQuickActionClick: (QuickAction) -> Unit = {},
+    onQuickActionClick: (QuickActionSpec) -> Unit = {},
     onPoiDetailClose: () -> Unit = {},
     onSheetDismiss: () -> Unit = {},
-    bottomPadding: Dp = 0.dp,  // 新增底部 padding 参数
+    bottomPadding: Dp = 0.dp,
 ) {
-  var selectedPoi by remember { mutableStateOf<PoiItem?>(null) }
-  var previousSheetValue by remember { mutableStateOf<FlexibleSheetValue?>(null) }
+    var selectedPoi by remember { mutableStateOf<PoiItem?>(null) }
+    var previousSheetValue by remember { mutableStateOf<FlexibleSheetValue?>(null) }
 
-  // ========== 使用 LocalWindowInfo 获取实时容器宽度 ==========
-  val windowInfo = LocalWindowInfo.current
-  val containerWidthPx = windowInfo.containerSize.width
-  val density = LocalDensity.current
-  val containerWidthDp = with(density) { containerWidthPx.toDp() }
+    // ========== 使用 LocalWindowInfo 获取实时容器宽度 ==========
+    val windowInfo = LocalWindowInfo.current
+    val containerWidthPx = windowInfo.containerSize.width
+    val density = LocalDensity.current
+    val containerWidthDp = with(density) { containerWidthPx.toDp() }
 
-  // 判断是否为宽屏（折叠屏展开/平板）
-  val isWideScreen by remember(containerWidthDp) {
-    derivedStateOf { containerWidthDp >= 600.dp }
-  }
-
-  // 计算 Sheet 宽度
-  // 宽屏：占容器宽度一半；手机/折叠屏折叠：传 null 让 FlexibleBottomSheet 内部处理为全宽
-  val adaptiveWidth = sheetWidth ?: when {
-    isWideScreen -> containerWidthDp / 2
-    else -> null
-  }
-
-  // 计算水平对齐方式
-  // 宽屏默认靠左；手机默认居中
-  val adaptiveAlignment = sheetHorizontalAlignment ?: when {
-    isWideScreen -> Alignment.Start
-    else -> Alignment.CenterHorizontally
-  }
-
-  // ========== Sheet 与弹窗状态联动 ==========
-  LaunchedEffect(selectedPoi) {
-    if (shouldCollapseSheetOnPoiSelect) {
-      if (selectedPoi != null) {
-        if (previousSheetValue == null) {
-          previousSheetValue = sheetState.currentValue
-        }
-        if (sheetState.currentValue != FlexibleSheetValue.SlightlyExpanded) {
-          sheetState.slightlyExpand()
-        }
-      } else {
-        previousSheetValue?.let { prev ->
-          if (sheetState.currentValue != prev) {
-            sheetState.animateTo(prev)
-          }
-          previousSheetValue = null
-        }
-      }
+    // 判断是否为宽屏（折叠屏展开/平板）
+    val isWideScreen by remember(containerWidthDp) {
+        derivedStateOf { containerWidthDp >= 600.dp }
     }
-  }
 
-  // ========== BottomSheet 主体 ==========
-  FlexibleBottomSheet(
-      sheetState = sheetState,
-      containerColor = Color.White,
-      onDismissRequest = onSheetDismiss,
-      dragHandle = null,
-      windowInsets = WindowInsets.systemBars,
-      sheetWidth = adaptiveWidth,
-      sheetHorizontalAlignment = adaptiveAlignment,
-//      modifier = when(isWideScreen) {
-//        true -> Modifier.padding(bottom = bottomPadding)
-//        false -> Modifier.fillMaxSize().padding(bottom = bottomPadding)
-//      }
-      modifier = modifier.then(
-          when(isWideScreen) {
-            true -> Modifier
-            false -> Modifier.fillMaxSize()
-          }
-      )
-  ) {
-    if (isDestinationSheetVisible && destination != null) {
-      destinationContent()
-    } else {
-      BottomSheetContent(
-          sheetState = sheetState,
-          quickActions = quickActions,
-          poiList = poiList,
-          onPoiClick = { poi ->
-            selectedPoi = poi
-            onPoiSelected(poi)
-          },
-          onQuickActionClick = onQuickActionClick,
-      )
+    // 计算 Sheet 宽度
+    val adaptiveWidth = sheetWidth ?: when {
+        isWideScreen -> containerWidthDp / 2
+        else -> null
     }
-  }
 
-  // ========== 非模态 POI 详情弹窗 ==========
-  if (selectedPoi != null) {
-    val cardWidth = (containerWidthDp * 0.85f).coerceAtMost(360.dp)
+    // 计算水平对齐方式
+    val adaptiveAlignment = sheetHorizontalAlignment ?: when {
+        isWideScreen -> Alignment.Start
+        else -> Alignment.CenterHorizontally
+    }
 
-    Popup(
-        alignment = Alignment.Center,
-        properties = PopupProperties(
-            focusable = false,
-            dismissOnClickOutside = true,
-            dismissOnBackPress = true,
-        ),
-        onDismissRequest = {
-          selectedPoi = null
-          onPoiDetailClose()
+    // ========== Sheet 与弹窗状态联动 ==========
+    LaunchedEffect(selectedPoi) {
+        if (shouldCollapseSheetOnPoiSelect) {
+            if (selectedPoi != null) {
+                if (previousSheetValue == null) {
+                    previousSheetValue = sheetState.currentValue
+                }
+                if (sheetState.currentValue != FlexibleSheetValue.SlightlyExpanded) {
+                    sheetState.slightlyExpand()
+                }
+            } else {
+                previousSheetValue?.let { prev ->
+                    if (sheetState.currentValue != prev) {
+                        sheetState.animateTo(prev)
+                    }
+                    previousSheetValue = null
+                }
+            }
         }
-    ) {
-      var visible by remember { mutableStateOf(false) }
-      LaunchedEffect(Unit) { visible = true }
+    }
 
-      val offsetY by androidx.compose.animation.core.animateIntOffsetAsState(
-          targetValue = if (visible) {
-            androidx.compose.ui.unit.IntOffset(0, 0)
-          } else {
-            androidx.compose.ui.unit.IntOffset(0, with(density) { 80.dp.toPx().toInt() })
-          },
-          animationSpec = androidx.compose.animation.core.spring(
-              dampingRatio = androidx.compose.animation.core.Spring.DampingRatioMediumBouncy
-          ),
-          label = "poi_card_slide"
-      )
-
-      Box(
-          modifier = Modifier
-              .width(cardWidth)
-              .offset { offsetY }
-      ) {
-        PoiDetailCardV2(
-            poi = selectedPoi!!,
-            onClose = {
-              selectedPoi = null
-              onPoiDetailClose()
-            },
-            onNavigate = {
-              selectedPoi?.let { onPoiNavigate(it) }
-            },
-            modifier = Modifier.fillMaxWidth()
+    // ========== BottomSheet 主体 ==========
+    FlexibleBottomSheet(
+        sheetState = sheetState,
+        containerColor = Color.White,
+        onDismissRequest = onSheetDismiss,
+        dragHandle = null,
+        windowInsets = WindowInsets.systemBars,
+        sheetWidth = adaptiveWidth,
+        sheetHorizontalAlignment = adaptiveAlignment,
+        modifier = modifier.then(
+            when(isWideScreen) {
+                true -> Modifier
+                false -> Modifier.fillMaxSize()
+            }
         )
-      }
+    ) {
+        if (isDestinationSheetVisible && destination != null) {
+            destinationContent()
+        } else {
+            BottomSheetContent(
+                sheetState = sheetState,
+                quickActions = quickActions,
+                poiList = poiList,
+                onPoiClick = { poi ->
+                    selectedPoi = poi
+                    onPoiSelected(poi)
+                },
+                onQuickActionClick = onQuickActionClick,
+            )
+        }
     }
-  }
+
+    // ========== 非模态 POI 详情弹窗 ==========
+    if (selectedPoi != null) {
+        val cardWidth = (containerWidthDp * 0.85f).coerceAtMost(360.dp)
+
+        Popup(
+            alignment = Alignment.Center,
+            properties = PopupProperties(
+                focusable = false,
+                dismissOnClickOutside = true,
+                dismissOnBackPress = true,
+            ),
+            onDismissRequest = {
+                selectedPoi = null
+                onPoiDetailClose()
+            }
+        ) {
+            var visible by remember { mutableStateOf(false) }
+            LaunchedEffect(Unit) { visible = true }
+
+            val offsetY by androidx.compose.animation.core.animateIntOffsetAsState(
+                targetValue = if (visible) {
+                    androidx.compose.ui.unit.IntOffset(0, 0)
+                } else {
+                    androidx.compose.ui.unit.IntOffset(0, with(density) { 80.dp.toPx().toInt() })
+                },
+                animationSpec = androidx.compose.animation.core.spring(
+                    dampingRatio = androidx.compose.animation.core.Spring.DampingRatioMediumBouncy
+                ),
+                label = "poi_card_slide"
+            )
+
+            Box(
+                modifier = Modifier
+                    .width(cardWidth)
+                    .offset { offsetY }
+            ) {
+                PoiDetailCardV2(
+                    poi = selectedPoi!!,
+                    onClose = {
+                        selectedPoi = null
+                        onPoiDetailClose()
+                    },
+                    onNavigate = {
+                        selectedPoi?.let { onPoiNavigate(it) }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+    }
 }
 
 // ==================== 内部实现 ====================
@@ -263,107 +261,110 @@ fun GeoKoriCenterSheet(
 @Composable
 private fun BottomSheetContent(
     sheetState: FlexibleSheetState,
-    quickActions: List<QuickAction>,
+    quickActions: List<QuickActionSpec>,
     poiList: List<PoiItem>,
     onPoiClick: (PoiItem) -> Unit,
-    onQuickActionClick: (QuickAction) -> Unit,
+    onQuickActionClick: (QuickActionSpec) -> Unit,
 ) {
-  val isExpanded by remember {
-    derivedStateOf { sheetState.currentValue != FlexibleSheetValue.SlightlyExpanded }
-  }
+    val isExpanded by remember {
+        derivedStateOf { sheetState.currentValue != FlexibleSheetValue.SlightlyExpanded }
+    }
 
-  Column(
-      modifier = Modifier
-          .fillMaxWidth()
-          .fillMaxHeight()
-  ) {
-    SearchHeaderV2()
-
-    // 拖拽指示条
-    Box(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 12.dp),
-        contentAlignment = Alignment.Center
+            .fillMaxHeight()
     ) {
-      Box(
-          modifier = Modifier
-              .width(40.dp)
-              .height(4.dp)
-              .clip(RoundedCornerShape(2.dp))
-              .background(Color(0xFFDADCE0))
-      )
-    }
+        SearchHeaderV2()
 
-    // 快捷操作（折叠/展开自动切换）
-    AnimatedContent(
-        targetState = isExpanded,
-        label = "quick_actions"
-    ) { expanded ->
-      if (expanded) {
-        ExpandedQuickActions(
-            actions = quickActions,
-            onActionClick = onQuickActionClick
+        // 拖拽指示条
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 12.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(40.dp)
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(Color(0xFFDADCE0))
+            )
+        }
+
+        // 快捷操作（折叠/展开自动切换）
+        AnimatedContent(
+            targetState = isExpanded,
+            label = "quick_actions"
+        ) { expanded ->
+            if (expanded) {
+                ExpandedQuickActions(
+                    actions = quickActions,
+                    onActionClick = onQuickActionClick
+                )
+            } else {
+                CollapsedQuickActions(
+                    actions = quickActions,
+                    onActionClick = onQuickActionClick
+                )
+            }
+        }
+
+        // 分隔线（随 Sheet 展开进度渐变）
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+                .height(1.dp)
+                .alpha(0.3f + sheetState.visibilityProgress * 0.7f)
+                .background(Color(0xFFDADCE0))
         )
-      } else {
-        CollapsedQuickActions(
-            actions = quickActions,
-            onActionClick = onQuickActionClick
-        )
-      }
+
+        // 列表头部
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "附近推荐",
+                fontSize = if (isExpanded) 18.sp else 16.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFF202124)
+            )
+            TextButton(onClick = { }) {
+                Text("查看更多", fontSize = 13.sp)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // POI 列表
+        LazyColumn(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp)
+        ) {
+            items(poiList, key = { it.id }) { poi ->
+                PoiListItemV2(
+                    poi = poi,
+                    onClick = { onPoiClick(poi) }
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
     }
-
-    // 分隔线（随 Sheet 展开进度渐变）
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp)
-            .height(1.dp)
-            .alpha(0.3f + sheetState.visibilityProgress * 0.7f)
-            .background(Color(0xFFDADCE0))
-    )
-
-    // 列表头部
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-      Text(
-          text = "附近推荐",
-          fontSize = if (isExpanded) 18.sp else 16.sp,
-          fontWeight = FontWeight.Bold,
-          color = Color(0xFF202124)
-      )
-      TextButton(onClick = { }) {
-        Text("查看更多", fontSize = 13.sp)
-      }
-    }
-
-    Spacer(modifier = Modifier.height(8.dp))
-
-    // POI 列表
-    LazyColumn(
-        modifier = Modifier.weight(1f),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp)
-    ) {
-      items(poiList, key = { it.id }) { poi ->
-        PoiListItemV2(
-            poi = poi,
-            onClick = { onPoiClick(poi) }
-        )
-      }
-    }
-
-    Spacer(modifier = Modifier.height(16.dp))
-  }
 }
 
 // ==================== 默认数据 ====================
 
+/**
+ * 框架默认 quickActions（List<QuickAction> 协变兼容 List<QuickActionSpec>，无需改动）。
+ */
 fun defaultQuickActions(): List<QuickAction> = listOf(
     QuickAction(null, "动物", Color(0xFFE3F2FD), Color(0xFF1565C0)),
     QuickAction(null, "植物", Color(0xFFF3E5F5), Color(0xFF6A1B9A)),

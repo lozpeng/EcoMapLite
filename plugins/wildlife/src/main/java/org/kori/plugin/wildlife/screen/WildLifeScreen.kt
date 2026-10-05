@@ -26,12 +26,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.ExperimentalMaterialApi
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.LocalPolice
 import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.pullrefresh.pullRefresh
@@ -72,21 +69,30 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.cwcc.open.geokori.framework.PluginModuleUtils
-import org.cwcc.open.geokori.map.LocalMapSession
-import org.cwcc.open.geokori.map.MapSession
+import org.cwcc.open.geokori.map.MapLayerManager
 import org.cwcc.open.geokori.ui.material3.center.model.CollapsedQuickActions
 import org.cwcc.open.geokori.ui.material3.center.model.ExpandedQuickActions
-import org.cwcc.open.geokori.ui.material3.center.model.QuickAction
+import org.cwcc.open.geokori.ui.material3.center.model.QuickActionSpec
 import org.cwcc.open.plugin.wildlife.viewmodel.WildLifeViewModel
 import org.koin.androidx.compose.koinViewModel
+import org.kori.plugin.wildlife.actions.WfActionType
+import org.kori.plugin.wildlife.actions.WfBizAction
+import org.kori.plugin.wildlife.actions.defaultBizQuickActions
 import org.kori.plugin.wildlife.actions.defaultWildLifeActions
-import org.kori.plugin.wildlife.layers.IllegalEventsLayerController
 
+/**
+ * 野生动植物监管屏（v3 · 类型化 Action）。
+ *
+ *  · 业务按钮全部使用 [WfBizAction]（QuickActionSpec 插件实现），
+ *    分发按 action.type 类型路由，不再匹配中文字符串 label
+ *  · 图层类（LAYER）→ MapLayerManager.toggle(action.id)，Session 自动注入
+ *  · checked/loading → collect MapLayerManager.states 合并进列表（copy 替换重组）
+ */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterialApi::class)
 @Composable
 fun WildLifeScreen(
-    quickActions: List<QuickAction> = defaultWildLifeActions(),
-    bizActions: List<QuickAction> = defaultBizQuickActions(),
+    quickActions: List<QuickActionSpec> = defaultWildLifeActions(),
+    bizActions: List<WfBizAction> = defaultBizQuickActions(),
     viewModel: WildLifeViewModel = koinViewModel(),
     expand: Boolean = true,
 ) {
@@ -106,21 +112,15 @@ fun WildLifeScreen(
         onRefresh = { viewModel.refreshWildLifeData() }
     )
 
-    // ★ 插件级 Session（PluginEntryClass 的 CompositionLocalProvider 注入）
-    val mapSession = LocalMapSession.current
+    // ★ 框架级图层管理器状态 → 合并进 WfBizAction（id 为全限定图层 id）
+    val layerStates by MapLayerManager.states.collectAsState()
 
-    // ★【关键修复】bizActions 提升为 Compose 可观察状态：
-    //   直接改 QuickAction.checked（普通 var）不会触发重组，
-    //   必须整项 copy 替换进 State<List>，按钮才会即时刷新。
-    //   初始时同步一次控制器的真实开关状态（sheet 重开不高亮丢状态）。
-    val bizActionsState = remember {
-        mutableStateOf(
-            bizActions.map {
-                if (it.label == "盗猎活动") {
-                    it.copy(checked = IllegalEventsLayerController.isActive)
-                } else it
-            }
-        )
+    val mergedBizActions = remember(bizActions, layerStates) {
+        bizActions.map { action ->
+            val st = layerStates[action.id]
+            if (st == null) action
+            else action.copy(checked = st.active, loading = st.loading)
+        }
     }
 
     Scaffold(
@@ -163,14 +163,14 @@ fun WildLifeScreen(
                             ExpandedQuickActions(
                                 actions = quickActions,
                                 onActionClick = { action ->
-                                    handleQuickActionClick(action, context, true, mapSession, bizActionsState)
+                                    handleQuickActionClick(action, context)
                                 },
                             )
                         } else {
                             CollapsedQuickActions(
                                 actions = quickActions.take(4),
                                 onActionClick = { action ->
-                                    handleQuickActionClick(action, context, true, mapSession, bizActionsState)
+                                    handleQuickActionClick(action, context)
                                 },
                             )
                         }
@@ -198,16 +198,16 @@ fun WildLifeScreen(
                     ) { expanded ->
                         if (expanded) {
                             ExpandedQuickActions(
-                                actions = bizActionsState.value,
+                                actions = mergedBizActions,
                                 onActionClick = { action ->
-                                    handleQuickActionClick(action, context, true, mapSession, bizActionsState)
+                                    handleQuickActionClick(action, context)
                                 },
                             )
                         } else {
                             CollapsedQuickActions(
-                                actions = bizActionsState.value.take(4),
+                                actions = mergedBizActions.take(4),
                                 onActionClick = { action ->
-                                    handleQuickActionClick(action, context, true, mapSession, bizActionsState)
+                                    handleQuickActionClick(action, context)
                                 },
                             )
                         }
@@ -336,11 +336,11 @@ fun SpeedDialFAB(
         ) {
             if (isExpanded) {
                 SpeedDialActionButton(
-                    icon = Icons.Default.LocalPolice,
-                    label = "同步",
-                    color = Color(0xFF9C27B0),
+                    icon = Icons.Default.FolderOpen,
+                    label = "打开",
+                    color = Color(0xFF2196F3),
                     onClick = {
-                        onActionClick("sync_data")
+                        onActionClick("open_folder")
                         onExpandedChange(false)
                     },
                     modifier = Modifier
@@ -371,21 +371,6 @@ fun SpeedDialFAB(
                     color = Color(0xFF4CAF50),
                     onClick = {
                         onActionClick("add_record")
-                        onExpandedChange(false)
-                    },
-                    modifier = Modifier
-                        .size(subButtonSize)
-                        .scale(scale.value)
-                )
-            }
-
-            if (isExpanded) {
-                SpeedDialActionButton(
-                    icon = Icons.Default.FolderOpen,
-                    label = "打开",
-                    color = Color(0xFF2196F3),
-                    onClick = {
-                        onActionClick("open_folder")
                         onExpandedChange(false)
                     },
                     modifier = Modifier
@@ -433,82 +418,48 @@ fun SpeedDialActionButton(
 }
 
 /**
- * ★【变更】盗猎活动的 Toast 全部由 IllegalEventsLayerController 负责
- *   （加载中/已显示/已关闭/失败）；本函数只负责开关 + 按钮 checked 状态刷新。
- * ★【关键】checked 状态通过替换 bizActionsState 里对应项来刷新
- *   （直接改 QuickAction.checked 这个普通 var 不会触发重组）。
+ * ★ 类型化分发（v3）：
+ *  · WfBizAction 按 [WfBizAction.type] 路由 —— 不再匹配中文字符串
+ *  · 非 WfBizAction 的 QuickActionSpec（如首页 quickActions）退回 label 分支兼容处理
  */
 private fun handleQuickActionClick(
-    action: QuickAction,
+    action: QuickActionSpec,
     context: android.content.Context,
-    isDependenciesReady: Boolean,
-    mapSession: MapSession?,
-    bizActionsState: androidx.compose.runtime.MutableState<List<QuickAction>>,
 ) {
-    if (!isDependenciesReady) {
-        Toast.makeText(context, "依赖插件未加载，请检查插件配置", Toast.LENGTH_SHORT).show()
+    // 1. wildlife 业务动作：类型路由
+    if (action is WfBizAction) {
+        when (action.type) {
+            WfActionType.LAYER -> {
+                // 已注册 → 框架管理器接管（自动注入 Session、转圈/高亮/Toast）
+                if (action.id.isNotEmpty() && MapLayerManager.isRegistered(action.id)) {
+                    MapLayerManager.toggle(action.id, context)
+                } else {
+                    Toast.makeText(context, "图层未注册:${action.id}", Toast.LENGTH_SHORT).show()
+                }
+            }
+            WfActionType.BOTTOM_SHEET -> when (action.payload) {
+                "elephant-monitoring" -> PluginModuleUtils.showBottomSheet(
+                    content = { ElephantMonitoringContent() },
+                    title = action.label,
+                    closeable = true,
+                    isNormalActivity = true,
+                )
+                "habitat" -> PluginModuleUtils.showBottomSheet(
+                    content = { ElephantMonitoringContent() },
+                    title = action.label,
+                    isNormalActivity = false,
+                )
+                else -> Toast.makeText(context, action.label, Toast.LENGTH_SHORT).show()
+            }
+            WfActionType.TOAST ->
+                Toast.makeText(context, action.label, Toast.LENGTH_SHORT).show()
+        }
         return
     }
 
-    when (action.label) {
-        "虎人工繁育" -> Toast.makeText(context, "虎人工繁育", Toast.LENGTH_SHORT).show()
-
-        "盗猎活动" -> {
-            val session = mapSession
-            if (session == null) {
-                Toast.makeText(context, "地图插件未加载，请稍后再试", Toast.LENGTH_SHORT).show()
-                return
-            }
-            val wasActive = IllegalEventsLayerController.isActive
-            IllegalEventsLayerController.toggle(context, session)
-            val nowActive = !wasActive
-
-            // ★ 即时刷新按钮高亮：整项 copy 替换进 State<List> 触发重组
-            bizActionsState.value = bizActionsState.value.map {
-                if (it.label == "盗猎活动") it.copy(checked = nowActive) else it
-            }
-        }
-
-        "象实时监测" -> {
-            PluginModuleUtils.showBottomSheet(
-                content = {},
-                title = action.label,
-                closeable = true,
-                isNormalActivity = true
-            )
-            return
-        }
-        "栖息地分布" -> {
-            PluginModuleUtils.showBottomSheet(
-                content = { ElephantMonitoringContent() },
-                title = action.label,
-                isNormalActivity = false
-            )
-            return
-        }
-        else -> Toast.makeText(context, "点击: ${action.label}", Toast.LENGTH_SHORT).show()
-    }
+    // 2. 非业务 QuickActionSpec 兼容路径
+    Toast.makeText(context, "点击: ${action.label}", Toast.LENGTH_SHORT).show()
 }
-
-
-
-fun defaultBizQuickActions(): List<QuickAction> = listOf(
-    QuickAction(null, "虎人工繁育", Color(0xFFE3F2FD), Color(0xFF1565C0)),
-    QuickAction(
-        null,
-        "盗猎活动",
-        Color(0xFFF3E5F5),
-        Color(0xFF6A1B9A),
-        checked = false
-    ),
-    QuickAction(null, "象实时监测", Color(0xFFFFF3E0), Color(0xFFEF6C00)),
-    QuickAction(null, "栖息地分布", Color(0xFFFFFDE7), Color(0xFFF9A825)),
-    QuickAction(null, "鸟类环志站", Color(0xFFE8F5E9), Color(0xFF2E7D32)),
-    QuickAction(null, "繁育单位", Color(0xFFFFEBEE), Color(0xFFC62828)),
-    QuickAction(Icons.Default.LocalPolice, "同步监测", Color(0xFFFFF3E0), Color(0xFFEF6C00)),
-    QuickAction(Icons.Default.Flag, "水鸟分布", Color(0xFFE0F2F1), Color(0xFF00695C)),
-    QuickAction(Icons.Default.BugReport, "越冬水鸟", Color(0xFFE0F2F1), Color(0xFF00695C)),
-)
 
 @Composable
 fun ElephantMonitoringContent() {

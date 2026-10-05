@@ -1,15 +1,16 @@
 package org.kori.plugin.wildlife.layers
 
-
 import android.content.Context
 import android.graphics.Color
 import android.util.Log
-import android.widget.Toast
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.cwcc.open.geokori.map.LibreMapLayer
+import org.cwcc.open.geokori.map.MapLayerManager
 import org.cwcc.open.geokori.map.MapSession
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.maps.MapLibreMap
@@ -24,77 +25,32 @@ import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.geojson.FeatureCollection
 import java.net.HttpURLConnection
 import java.net.URL
-import kotlin.coroutines.cancellation.CancellationException
 
 /**
- * 盗猎事件热力图开关控制器（wildlife 插件级单例）。
+ * 盗猎事件热力图图层（合并版：渲染实现 + 框架 [MapLayer] 生命周期一体）。
  *
- * ★ 生命周期 = 插件生命周期：
- *  · WildLifeScreen 只是"开关按钮"的宿主，sheet 反复开关不影响图层
- *  · 图层从开启一直保持到 PluginEntryClass.onUnload 调用 [close]，或进程死亡
- *  · 加载提示 Toast 由本控制器统一负责（加载中 / 已显示 / 已关闭 / 失败）
+ * 相对拆分版的变化：
+ *  · 直接继承 [MapLayer] —— 不再需要 IllegalEventsMapLayer 转发壳
+ *  · Session 由 [MapLayerManager] 在 toggle 时自动注入 [onAttach]
+ *  · 加载结果直接调 notifyLoaded()/notifyFailed()，回调参数删除
+ *  · onDetach 负责精确移除 source/layer；close() 由基类收尾
  *
- * 线程：主线程调用（Compose / onUnload 均满足）。
+ * 渲染行为不变：API GeoJSON → 热力/圆点/标注三层，zoom 11 分界切换；
+ * 10 分钟缓存；close 不取消在途请求（写缓存供下次秒开）。
+ *
+ * 注册随类加载完成（伴生对象 init），插件加载即就绪。
  */
-object IllegalEventsLayerController {
-    private var layer: IllegalEventsHeatLayer? = null
-
-    /** 当前是否已挂载（UI 可据此恢复按钮 checked 态）。 */
-    val isActive: Boolean
-        get() = layer != null
-
-    /**
-     * 开关切换。session 为 wildlife 插件级 Session（LocalMapSession.current）。
-     * 首次 toggle 后图层常驻地图，直至 [close]。
-     */
-    fun toggle(context: Context, session: MapSession) {
-        val appCtx = context.applicationContext
-        val current = layer
-        if (current != null) {
-            // 再次点击：关闭并移除（source/layer 经 session 精确清理）
-            runCatching { current.close() }
-            layer = null
-            Toast.makeText(appCtx, "已关闭盗猎热力图", Toast.LENGTH_SHORT).show()
-            return
-        }
-        // ★ 立即反馈：数据量大，先提示加载中，完成/失败由回调接力
-        Toast.makeText(appCtx, "盗猎数据加载中…", Toast.LENGTH_SHORT).show()
-        layer = IllegalEventsHeatLayer(
-            appCtx,
-            session,
-            onLoaded = {
-                Toast.makeText(appCtx, "盗猎热力图已显示", Toast.LENGTH_SHORT).show()
-            },
-            onError = {
-                Toast.makeText(appCtx, "盗猎数据加载失败", Toast.LENGTH_SHORT).show()
-            },
-        )
-    }
-
-    /** 插件卸载时调用（PluginEntryClass.onUnload），幂等。 */
-    fun close() {
-        runCatching { layer?.close() }
-        layer = null
-    }
-}
-
-/**
- * 盗猎事件热力图图层（MapSession 版 · 缓存 + 加载回调）。
- *
- *  · source/layer：session.addSource/addLayer 添加，session.removeSource/removeLayer 移除
- *  · 监听器：session.track(attach/detach) 注册，插件卸载自动注销
- *  · 缓存：GeoJSON 解析结果缓存 10 分钟，命中跳过网络；refresh() 强制失效
- *  · close() 不取消协程：在途请求跑完写缓存，下次开启秒开
- *  · [onLoaded]/[onError]：加载结果回调（控制器用于 Toast 提示）
- */
-class IllegalEventsHeatLayer(
-    private val context: Context,
-    private val session: MapSession,
-    private val onLoaded: (() -> Unit)? = null,
-    private val onError: (() -> Unit)? = null,
-) {
+class IllegalEventsHeatLayer : LibreMapLayer() {
 
     companion object {
+        const val OWNER_PLUGIN_ID = "org.kori.plugin.wildlife"
+        const val LAYER_ID = "illegal-events"
+        val FULL_ID: String = MapLayerManager.fullId(OWNER_PLUGIN_ID, LAYER_ID)
+
+        init {
+            MapLayerManager.register(OWNER_PLUGIN_ID, LAYER_ID) { IllegalEventsHeatLayer() }
+        }
+
         private const val TAG = "IllegalEventsHeatLayer"
 
         private const val SOURCE_ID = "__sys__illegal-source"
@@ -177,38 +133,55 @@ class IllegalEventsHeatLayer(
         )
     }
 
+    // =============================================================================================
+    // 状态
+    // =============================================================================================
+
+    override val displayName: String = "盗猎情况"
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
 
-    @Volatile private var closed = false
     @Volatile private var mVisible = true
 
+    private var context: Context? = null
     private var map: MapLibreMap? = null
     private var isLoaded = false
     private var appliedHeatMode: Boolean? = null
 
-    init {
+    // =============================================================================================
+    // MapLayer 生命周期（Session 由管理器自动注入）
+    // =============================================================================================
+
+    override fun onAttach(session: MapSession, context: Context) {
+        this.context = context
+        // Session 已注入；地图可能未就绪，onReady 等待
         session.onReady { _, m ->
-            if (closed) return@onReady
+            if (!isActive) return@onReady
             map = m
             registerListeners(m)
             loadData()
         }
     }
 
+    override fun onDetach() {
+        removeMapObjects()
+        isLoaded = false
+    }
+
     // =============================================================================================
-    // 监听器
+    // 监听器（session.track：插件卸载自动注销）
     // =============================================================================================
 
     private fun registerListeners(map: MapLibreMap) {
-        session.track(
+        currentSession()?.track(
             MapLibreMap.OnCameraMoveListener {
-                if (closed || !isLoaded || !mVisible) return@OnCameraMoveListener
+                if (!isActive || !isLoaded || !mVisible) return@OnCameraMoveListener
                 applyVisibilityByZoom(map.cameraPosition.zoom)
             },
             attach = { map.addOnCameraMoveListener(it) },
             detach = { map.removeOnCameraMoveListener(it) },
         )
-        session.track(
+        currentSession()?.track(
             MapLibreMap.OnMapClickListener { latLng -> onMapClicked(latLng) },
             attach = { map.addOnMapClickListener(it) },
             detach = { map.removeOnMapClickListener(it) },
@@ -216,7 +189,7 @@ class IllegalEventsHeatLayer(
     }
 
     private fun onMapClicked(latLng: LatLng): Boolean {
-        if (closed || !isLoaded || !mVisible) return false
+        if (!isActive || !isLoaded || !mVisible) return false
         val m = map ?: return false
         if (m.cameraPosition.zoom < HEAT_MAX_ZOOM) return false
         if (showAttrTable(latLng, CIRCLE_LAYER_ID)) return true
@@ -228,14 +201,14 @@ class IllegalEventsHeatLayer(
     // =============================================================================================
 
     private fun loadData() {
-        // ★ 缓存命中：直接建图层，不碰网络
+        // 缓存命中：直接建图层
         cacheGet()?.let { cached ->
-            if (closed) return
+            if (!isActive) return
             setupLayers(cached)
             applyVisibilityByZoom(map?.cameraPosition?.zoom ?: 0.0, force = true)
             isLoaded = true
             Log.d(TAG, "setup from cache, isLoaded=true")
-            onLoaded?.invoke()
+            notifyLoaded()
             return
         }
 
@@ -249,21 +222,22 @@ class IllegalEventsHeatLayer(
                 cachePut(collection)
 
                 withContext(Dispatchers.Main) {
-                    if (closed) {
-                        Log.d(TAG, "closed during load, cache kept for next open")
+                    // 已卸载（close/detach）就只留缓存，不动地图
+                    if (!isActive) {
+                        Log.d(TAG, "detached during load, cache kept for next open")
                         return@withContext
                     }
                     setupLayers(collection)
                     applyVisibilityByZoom(map?.cameraPosition?.zoom ?: 0.0, force = true)
                     isLoaded = true
                     Log.d(TAG, "setup complete, isLoaded=true")
-                    onLoaded?.invoke()
+                    notifyLoaded()
                 }
             } catch (ce: CancellationException) {
                 throw ce
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to load data", e)
-                withContext(Dispatchers.Main) { onError?.invoke() }
+                withContext(Dispatchers.Main) { notifyFailed() }
             }
         }
     }
@@ -273,7 +247,7 @@ class IllegalEventsHeatLayer(
         return try {
             connection = (URL(API_URL).openConnection() as HttpURLConnection).apply {
                 requestMethod = "GET"
-                connectTimeout = 15_0000      // ★ 修正：原来是 15_0000 = 150 秒
+                connectTimeout = 15_0000
                 readTimeout = 15_0000
                 setRequestProperty("Accept", "application/geo+json")
             }
@@ -284,7 +258,7 @@ class IllegalEventsHeatLayer(
     }
 
     // =============================================================================================
-    // 图层构建（经 session）
+    // 图层构建（全部经 session）
     // =============================================================================================
 
     private fun setupLayers(collection: FeatureCollection) {
@@ -295,7 +269,7 @@ class IllegalEventsHeatLayer(
             return
         }
 
-        session.addSource(
+        currentSession()?.addSource(
             GeoJsonSource(
                 SOURCE_ID,
                 collection,
@@ -305,9 +279,9 @@ class IllegalEventsHeatLayer(
                     .withBuffer(512),
             ),
         )
-        session.addLayer(buildHeatmapLayer())
-        session.addLayer(buildCircleLayer())
-        session.addLayer(buildSymbolLayer())
+        currentSession()?.addLayer(buildHeatmapLayer())
+        currentSession()?.addLayer(buildCircleLayer())
+        currentSession()?.addLayer(buildSymbolLayer())
         Log.d(TAG, "source + 3 layers added via session")
     }
 
@@ -381,7 +355,7 @@ class IllegalEventsHeatLayer(
         }
 
     // =============================================================================================
-    // 显隐切换（从活的 map.style 读）
+    // 显隐切换
     // =============================================================================================
 
     private fun applyVisibilityByZoom(zoom: Double, force: Boolean = false) {
@@ -414,15 +388,14 @@ class IllegalEventsHeatLayer(
     }
 
     // =============================================================================================
-    // 属性表 / 生命周期
+    // 属性表 / 公开 API
     // =============================================================================================
 
     private fun showAttrTable(pnt: LatLng, layerId: String): Boolean {
         val m = map ?: return false
         val features = m.queryRenderedFeatures(m.projection.toScreenLocation(pnt), layerId)
         val feature = features.firstOrNull() ?: return false
-
-        // 属性表弹窗暂时停用（需要时恢复 XPopup 实现）
+        // 属性表弹窗（XPopup）需要时在此恢复实现
         return true
     }
 
@@ -435,26 +408,19 @@ class IllegalEventsHeatLayer(
 
     fun isVisible(): Boolean = mVisible
 
-    /** 强制重拉（清缓存 + 重建图层）。 */
+    /** 强制重拉（清缓存 + 重建）。 */
     fun refresh() {
-        if (closed) return
+        if (!isActive) return
         isLoaded = false
         cacheInvalidate()
         removeMapObjects()
         loadData()
     }
 
-    fun close() {
-        if (closed) return
-        closed = true
-        removeMapObjects()
-        isLoaded = false
-    }
-
     private fun removeMapObjects() {
-        session.removeLayer(HEATMAP_LAYER_ID)
-        session.removeLayer(CIRCLE_LAYER_ID)
-        session.removeLayer(SYMBOL_LAYER_ID)
-        session.removeSource(SOURCE_ID)
+        currentSession()?.removeLayer(HEATMAP_LAYER_ID)
+        currentSession()?.removeLayer(CIRCLE_LAYER_ID)
+        currentSession()?.removeLayer(SYMBOL_LAYER_ID)
+        currentSession()?.removeSource(SOURCE_ID)
     }
 }

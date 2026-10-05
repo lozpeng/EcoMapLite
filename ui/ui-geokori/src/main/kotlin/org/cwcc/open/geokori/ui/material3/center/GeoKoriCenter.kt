@@ -79,9 +79,10 @@ import org.cwcc.open.geokori.ui.material3.center.model.ExpandedQuickActions
 import org.cwcc.open.geokori.ui.material3.center.model.PoiDetailCardV2
 import org.cwcc.open.geokori.ui.material3.center.model.PoiItem
 import org.cwcc.open.geokori.ui.material3.center.model.PoiListItemV2
-import org.cwcc.open.geokori.ui.material3.center.model.QuickAction
+import org.cwcc.open.geokori.ui.material3.center.model.QuickActionSpec
 import org.cwcc.open.geokori.ui.material3.center.model.SearchHeaderV2
 import androidx.compose.animation.core.animateDpAsState
+
 /**
  * ToolBar 相对于 Sheet 的位置
  */
@@ -101,27 +102,10 @@ enum class ToolbarPosition {
  * 3. Sheet 支持三档展开（微展开 / 中度展开 / 全展开）。
  * 4. ToolBar 宽度、位置及 Sheet 宽度、位置均可独立定制。
  * 5. 选中 POI 时 Sheet 自动微展开，并弹出详情卡片。
- * 6. 【新增】底部模式下，主面板下拉到最底部后继续下拉，整个组件（Sheet + ToolBar）
+ * 6. 底部模式下，主面板下拉到最底部后继续下拉，整个组件（Sheet + ToolBar）
  *    一起滑出屏幕并隐藏，仅保留一个小拖动栏；向上拖动（或点击）小拖动栏可整体恢复。
- *
- * @param toolbarPosition ToolBar 位置（底部/顶部），决定 Sheet 展开方向
- * @param sheetState Sheet 状态，可由外部传入以精细控制
- * @param toolbarItems ToolBar 按钮列表
- * @param selectedToolbarItemId 当前选中的 ToolBar 项 ID
- * @param isVisible 组件整体是否可见（外部直接控制）
- * @param autoHideOnMapClick 是否监听地图点击广播来自动切换显隐
- * @param syncToolbarWithSheet 是否根据 Sheet 展开状态自动收起/展开 ToolBar
- * @param quickActions 快捷操作按钮列表
- * @param poiList POI 数据列表
- * @param shouldCollapseSheetOnPoiSelect 点击 POI 时是否自动收起 Sheet
- * @param toolbarWidth ToolBar 固定宽度，null 则根据屏幕尺寸自适应
- * @param toolbarHorizontalAlignment ToolBar 水平对齐，null 则根据屏幕尺寸自适应
- * @param sheetWidth Sheet 固定宽度，null 则根据屏幕尺寸自适应
- * @param sheetHorizontalAlignment Sheet 水平对齐，null 则根据屏幕尺寸自适应
- * @param enableDragToFullyHide 是否启用「下拉整体隐藏 + 小拖动栏恢复」交互（仅底部模式生效）
- * @param destination 目的地数据（用于显示目的地选择 Sheet）
- * @param isDestinationSheetVisible 是否显示目的地选择内容
- * @param destinationContent 目的地选择的内容 Composable
+ * 7. ★ quickActions 参数类型放宽为 [QuickActionSpec]——插件自定义 Action
+ *    （如 wildlife 的 WfBizAction）可直接接入，不再局限于框架 QuickAction。
  */
 @Composable
 fun GeoKoriCenter(
@@ -144,12 +128,12 @@ fun GeoKoriCenter(
     destinationContent: @Composable () -> Unit = {},
     onPoiSelected: (PoiItem) -> Unit = {},
     onPoiNavigate: (PoiItem) -> Unit = {},
-    onQuickActionClick: (QuickAction) -> Unit = {},
+    onQuickActionClick: (QuickActionSpec) -> Unit = {},
     onPoiDetailClose: () -> Unit = {},
     onSheetDismiss: () -> Unit = {},
-    onVisibilityChanged: ((Boolean) -> Unit)? = null,  // 新增回调
+    onVisibilityChanged: ((Boolean) -> Unit)? = null,
     onToolbarHeightChanged: ((Dp) -> Unit)? = null,
-    onFullyHiddenChanged: ((Boolean) -> Unit)? = null, // 新增回调：整体下拉隐藏状态
+    onFullyHiddenChanged: ((Boolean) -> Unit)? = null,
     /**
      * ★ 轨迹界面联动信号（录制 HUD / 回放 / 时间线 / 历史 / 卫星状态等全屏浮层是否激活）。
      *
@@ -166,7 +150,7 @@ fun GeoKoriCenter(
      */
     trackOverlayActive: Boolean = false,
     toolbarItems: List<BottomToolbarItem> = defaultToolbarItems(),
-    quickActions: List<QuickAction> = defaultQuickActions(),
+    quickActions: List<QuickActionSpec> = defaultQuickActions(),
     poiList: List<PoiItem> = defaultPoiList(),
 ) {
     val density = LocalDensity.current
@@ -320,7 +304,7 @@ fun GeoKoriCenter(
     }
 
     /* ================================================================ */
-    /* ========== 【新增】整体下拉隐藏（Sheet + ToolBar 一起滑出） ========== */
+    /* ========== 整体下拉隐藏（Sheet + ToolBar 一起滑出） ========== */
     /* ================================================================ */
     // 仅底部模式 + 开关打开时启用
     val dragToHideEnabled = enableDragToFullyHide && toolbarPosition == ToolbarPosition.Bottom
@@ -415,7 +399,6 @@ fun GeoKoriCenter(
     )
 
     // 恢复：整体滑回，Sheet 显式恢复到微展开档位
-    // （不依赖 show() 内部选档逻辑，也避免恢复到隐藏前的更高档位）
     fun revealCenter() {
         fullyHidden = false
         sheetValueBeforeFullHide = null
@@ -608,7 +591,7 @@ fun GeoKoriCenter(
                 }
             }
 
-            /* ===== 【新增】整体隐藏后保留的小拖动栏：上拉或点击恢复 ===== */
+            /* ===== 整体隐藏后保留的小拖动栏：上拉或点击恢复 ===== */
             if (dragToHideEnabled && fullyHidden) {
                 HiddenDragHandle(
                     modifier = Modifier
@@ -869,10 +852,10 @@ private fun SheetContentHost(
     isDestinationSheetVisible: Boolean,
     destination: Any?,
     destinationContent: @Composable () -> Unit,
-    quickActions: List<QuickAction>,
+    quickActions: List<QuickActionSpec>,
     poiList: List<PoiItem>,
     onPoiClick: (PoiItem) -> Unit,
-    onQuickActionClick: (QuickAction) -> Unit,
+    onQuickActionClick: (QuickActionSpec) -> Unit,
 ) {
     if (isDestinationSheetVisible && destination != null) {
         destinationContent()
@@ -887,15 +870,15 @@ private fun SheetContentHost(
     }
 }
 
-// ==================== Sheet 内容（复用原 BottomSheetContent 逻辑） ====================
+// ==================== Sheet 内容 ====================
 
 @Composable
 private fun GeoKoriSheetContent(
     sheetState: FlexibleSheetState,
-    quickActions: List<QuickAction>,
+    quickActions: List<QuickActionSpec>,
     poiList: List<PoiItem>,
     onPoiClick: (PoiItem) -> Unit,
-    onQuickActionClick: (QuickAction) -> Unit,
+    onQuickActionClick: (QuickActionSpec) -> Unit,
 ) {
     val isExpanded by remember {
         derivedStateOf { sheetState.currentValue != FlexibleSheetValue.SlightlyExpanded }
@@ -924,7 +907,7 @@ private fun GeoKoriSheetContent(
             )
         }
 
-        /* ---- 快捷操作（折叠/展开自动切换） ---- */
+        /* ---- 快捷操作（折叠/展开自动切换；接受任意 QuickActionSpec 实现） ---- */
         AnimatedContent(
             targetState = isExpanded,
             label = "quick_actions"
