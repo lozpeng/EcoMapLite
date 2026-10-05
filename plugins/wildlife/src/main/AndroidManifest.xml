@@ -5,10 +5,10 @@
     android:versionName="1.0.1">
 
     <application
-        android:label="主地图插件">
+        android:label="野生动物保护管理插件">
         <meta-data
             android:name="plugin.description"
-            android:value="地图插件" />
+            android:value="野生动植物保护管理插件，实时监测数据浏览、名录查询管理、野生动植物分布数据浏览与查询、人工繁育情况" />
         <meta-data
             android:name="plugin.entryClass"
             android:value="org.kori.plugin.wildlife.PluginEntryClass" />

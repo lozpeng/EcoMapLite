@@ -202,7 +202,13 @@ fun GeoKoriCenterToolBar(
         animationSpec = tween(300)
     )
     val overlap = 40.dp
-    val totalHeight = toolbarHeight + floatingSize - overlap
+    // 不可见时高度动画归 0：彻底不占位、不遮挡底下地图触摸，
+    // 同时避免外部按固定高度给 Sheet 留白却对不齐一个"看不见的 ToolBar"
+    val totalHeight by animateDpAsState(
+        targetValue = if (actualVisible) toolbarHeight + floatingSize - overlap else 0.dp,
+        animationSpec = tween(300),
+        label = "toolbar_total_height"
+    )
 
     val actualWidthModifier = if (adaptiveWidth != null) {
         Modifier.width(adaptiveWidth)
@@ -239,8 +245,11 @@ fun GeoKoriCenterToolBar(
     Box(
         modifier = modifier
             .then(actualWidthModifier)
-            //为 Dock 增加外边距，使其悬浮在下方内容之上
-            .padding(horizontal = dockPaddingH, vertical = dockPaddingV)
+            //为 Dock 增加外边距，使其悬浮在下方内容之上；隐藏时外边距一并归 0
+            .padding(
+                horizontal = if (actualVisible) dockPaddingH else 0.dp,
+                vertical = if (actualVisible) dockPaddingV else 0.dp
+            )
             .height(totalHeight)
             .alpha(toolbarAlpha)
             .offset(y = toolbarOffsetY),

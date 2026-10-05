@@ -73,12 +73,19 @@ import java.util.Locale
 /**
  * 轨迹时间线界面 v2 —— 以时间线为轴展示会话全过程。
  *
+ * 内部管线分四步（与文档卡片一一对应）：
+ *
+ *  1. **MERGE / DEDUPE** —— IO 线程合并去重原始轨迹点（[loadMergedPoints]）
+ *  2. **EVENTS / PAUSE** —— PAUSE / RESUME 事件对精确计算停留（[TimelineBuilder.pausesFromEvents]）
+ *  3. **BUCKET / DISTANCE** —— 5 分钟桶聚合点 + 媒体混排，
+ *     线段高度按累计里程成比例（[TimelineBuilder.build]）
+ *  4. **RENDER / VERIFY** —— 倒序渲染，线段终于起点；导出分享同一链路
+ *
  * ## 条目类型
  *
- *  · **起点 / 终点**：绿色 / 红色旗标，含年月日时分（起点）与时分（终点）
- *  · **暂停**：由录制的 PAUSE/RESUME 事件对**精确**计算（见 [TrackEvent]），
- *    琥珀色 ⏸ 节点，显示停留时长
- *  · **聚合轨迹点**：无媒体的点按 [BUCKET_MINUTES] 聚合，显示 点数 + 起止时间 + **耗时**
+ *  · **起点 / 终点**：绿色 / 红色旗标，含完整时间
+ *  · **暂停**：由录制的 PAUSE/RESUME 事件对精确计算，琥珀色节点，显示停留时长
+ *  · **聚合轨迹点**：无媒体的点按 [BUCKET_MINUTES] 聚合，显示 点数 + 起止时间 + 耗时
  *  · **媒体**：照片缩略图（点击放大）、音视频（点击播放），逐个列出
  *
  * 全部按时间倒序。顶部含 **分享/导出** 按钮（与历史界面同一导出链路）。
@@ -91,30 +98,30 @@ fun TrackTimelineScreen(
 ) {
     val context = LocalContext.current
 
+    // ===== 1. MERGE / DEDUPE =====
     var points by remember { mutableStateOf<List<TrackPoint>>(emptyList()) }
     LaunchedEffect(session.id) {
-        withContext(Dispatchers.IO) {
-            points = TrackMerger.mergeRawDeduped(session)
-        }
+        points = loadMergedPoints(session)
     }
-    // ★ 暂停/继续按录制事件精确计算（session.events），不再做间隙启发式
+
+    // ===== 2+3. EVENTS / PAUSE + BUCKET / DISTANCE =====
     // 第二个返回值：每条目下方线段的高度（dp，按与下一条目之间的"轨迹距离"换算）
-    val (items, lineHeightsDp) = remember(points, session.media, session.events) {
-        buildTimeline(points, session.media, session.events)
+    val timeline = remember(points, session.media, session.events) {
+        TimelineBuilder.build(points, session.media, session.events)
     }
+
     var viewerPhoto by remember { mutableStateOf<TrackMediaRecord?>(null) }
     var exportTarget by remember { mutableStateOf(false) }
 
     val dateFmt = remember { SimpleDateFormat("yyyy年MM月dd日 HH:mm", Locale.getDefault()) }
 
-    // ★ 系统返回键关闭（对话框打开时由对话框自身处理返回）
+    // 系统返回键关闭（对话框打开时由对话框自身处理返回）
     BackHandler { onClose() }
 
     Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.surface) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                // ★ 修复：顶部避让系统状态栏
                 .statusBarsPadding()
                 .padding(horizontal = 14.dp, vertical = 10.dp),
         ) {
@@ -134,9 +141,12 @@ fun TrackTimelineScreen(
                         maxLines = 1,
                     )
                 }
-                // ★ 导出 / 分享
                 IconButton(onClick = { exportTarget = true }) {
-                    Icon(Icons.Filled.Share, contentDescription = "导出分享", tint = MaterialTheme.colorScheme.primary)
+                    Icon(
+                        Icons.Filled.Share,
+                        contentDescription = "导出分享",
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
                 }
                 IconButton(onClick = onClose) {
                     Icon(Icons.Filled.Close, contentDescription = "关闭")
@@ -145,38 +155,24 @@ fun TrackTimelineScreen(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // ---- 时间线 ----
+            // ===== 4. RENDER / VERIFY =====
             LazyColumn(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                itemsIndexed(items, key = { _, item -> item.key }) { index, item ->
-                    // ★ 行高 = 与下一条目的时间差（比例轴）；媒体行保证缩略图/播放控件空间
-                    val next = items.getOrNull(index + 1)
+                itemsIndexed(timeline.items, key = { _, item -> item.key }) { index, item ->
+                    // 行高 = 与下一条目之间的轨迹距离（比例轴）；媒体行保证缩略图/播放控件空间
+                    val next = timeline.items.getOrNull(index + 1)
                     val rowHeight: Dp? = if (next == null) {
-                        null    // ★ 末行（起点）以下没有线 —— 线段终于起点
+                        null // 末行（起点）以下没有线 —— 线段终于起点
                     } else {
-                        // ★ 线段长度 ∝ 本条到下一条之间的轨迹距离（不是时间距离）
                         val minH = if (item is TlItem.Media) 96.dp else 44.dp
-                        lineHeightsDp[index].dp.coerceAtLeast(minH)
+                        timeline.lineHeightsDp[index].dp.coerceAtLeast(minH)
                     }
                     TimelineRow(
                         item = item,
-                        // ★ 时间线是线段：最后一个条目（起点）下方不再画线
-                        isLast = index == items.lastIndex,
+                        isLast = index == timeline.items.lastIndex,
                         rowHeight = rowHeight,
                         photoFile = if (item is TlItem.Media && item.record.type == TrackMediaRecord.Type.PHOTO)
                             session.resolve(item.record.filePath) else null,
-                        onMediaClick = { record ->
-                            when (record.type) {
-                                TrackMediaRecord.Type.PHOTO -> viewerPhoto = record
-                                else -> {
-                                    val file = session.resolve(record.filePath)
-                                    val mime = when (record.type) {
-                                        TrackMediaRecord.Type.VIDEO -> "video/mp4"
-                                        else -> "audio/mp4"
-                                    }
-                                    TrackShare.openMedia(context, file, mime)
-                                }
-                            }
-                        },
+                        onMediaClick = { record -> openMedia(context, session, record) { viewerPhoto = it } },
                     )
                 }
             }
@@ -205,42 +201,29 @@ fun TrackTimelineScreen(
 
     // ---- 导出格式对话框 ----
     if (exportTarget) {
-        var format by remember { mutableStateOf(TrackExporter.Format.GPX) }
-        AlertDialog(
-            onDismissRequest = { exportTarget = false },
-            title = { Text("导出轨迹") },
-            text = {
-                Column {
-                    Text(
-                        session.name,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    @Suppress("DEPRECATION")
-                    TrackExporter.Format.values().forEach { f ->
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            RadioButton(selected = format == f, onClick = { format = f })
-                            Text(f.name)
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    exportTarget = false
-                    TrackShare.exportAndShare(context, session, format)
-                }) { Text("导出并分享") }
-            },
-            dismissButton = {
-                TextButton(onClick = { exportTarget = false }) { Text("取消") }
+        ExportFormatDialog(
+            sessionName = session.name,
+            onDismiss = { exportTarget = false },
+            onExport = { format ->
+                exportTarget = false
+                TrackShare.exportAndShare(context, session, format)
             },
         )
     }
 }
 
 // =============================================================================================
-// 时间线条目模型与构建
+// 1. MERGE / DEDUPE
+// =============================================================================================
+
+/** IO 线程合并并去重会话的原始轨迹点。 */
+private suspend fun loadMergedPoints(session: TrackSession): List<TrackPoint> =
+    withContext(Dispatchers.IO) {
+        TrackMerger.mergeRawDeduped(session)
+    }
+
+// =============================================================================================
+// 条目模型
 // =============================================================================================
 
 private const val BUCKET_MINUTES = 5L
@@ -261,7 +244,7 @@ private sealed class TlItem {
         override val key get() = "end-$atMs"
     }
 
-    /** 暂停/停留（由时间间隙启发式推断）。 */
+    /** 暂停/停留（由录制的 PAUSE/RESUME 事件对精确计算）。 */
     data class Pause(val atMs: Long, val pausedMs: Long) : TlItem() {
         override val timeMs get() = atMs
         override val key get() = "pause-$atMs"
@@ -281,114 +264,144 @@ private sealed class TlItem {
     }
 }
 
-/**
- * 构建时间线：起终点 + 暂停（★ 事件对精确计算）+ 聚合点 + 媒体，倒序。
- *
- * @return Pair<条目列表, 线段高度dp列表> —— heights[i] = 条目 i 到下一条目之间的
- *         **轨迹距离**换算的线段高度（最后一条为 0）。按距离成比例：
- *         跑得快的路段线段长，原地停留的路段线段短（落到行最小高度）。
- */
-private fun buildTimeline(
-    points: List<TrackPoint>,
-    media: List<TrackMediaRecord>,
-    events: List<TrackEvent>,
-): Pair<List<TlItem>, List<Float>> {
-    val items = ArrayList<TlItem>()
+// =============================================================================================
+// 2+3. 时间线构建（纯计算，可单测）
+// =============================================================================================
 
-    if (points.isNotEmpty()) {
-        items.add(TlItem.Start(points.first().timestampMs))
-        items.add(TlItem.End(points.last().timestampMs))
+/** 构建完成的时间线：倒序条目 + 每条目下方线段高度（dp，最后一条为 0）。 */
+private class Timeline(
+    val items: List<TlItem>,
+    val lineHeightsDp: List<Float>,
+)
+
+private object TimelineBuilder {
+
+    /**
+     * 构建时间线：起终点 + 暂停（事件对精确计算）+ 聚合点 + 媒体，倒序。
+     *
+     * heights[i] = 条目 i 到下一条目之间的 **轨迹距离** 换算的线段高度：
+     * 跑得快的路段线段长，原地停留的路段线段短（落到行最小高度）。
+     */
+    fun build(
+        points: List<TrackPoint>,
+        media: List<TrackMediaRecord>,
+        events: List<TrackEvent>,
+    ): Timeline {
+        val items = ArrayList<TlItem>()
+
+        if (points.isNotEmpty()) {
+            items.add(TlItem.Start(points.first().timestampMs))
+            items.add(TlItem.End(points.last().timestampMs))
+        }
+
+        items.addAll(pausesFromEvents(events, points.lastOrNull()?.timestampMs))
+        items.addAll(bucketPoints(points))
+        media.forEach { items.add(TlItem.Media(it)) }
+
+        val sorted = items.sortedByDescending { it.timeMs }
+
+        // ---- 相邻条目间的轨迹距离 → 线段高度 ----
+        val cumAt = cumulativeDistance(points)
+        val heights = sorted.mapIndexed { i, item ->
+            val next = sorted.getOrNull(i + 1)
+            if (next == null) {
+                0f // 起点：以下无线
+            } else {
+                // 本条时间 ≤ 下一条时间（倒序），距离 = 里程差
+                val stretchM = (cumAt(item.timeMs) - cumAt(next.timeMs)).coerceAtLeast(0.0)
+                distToLineDp(stretchM)
+            }
+        }
+        return Timeline(sorted, heights)
     }
 
-    // ★ 暂停：由录制的 PAUSE/RESUME 事件对精确计算。
-    // 暂停中结束（无配对 RESUME）→ 用最后一个轨迹点时间作为暂停结束。
-    val sortedEvents = events.sortedBy { it.timestampMs }
-    var ei = 0
-    while (ei < sortedEvents.size) {
-        val e = sortedEvents[ei]
-        if (e.type == TrackEventType.PAUSE) {
-            val resume = sortedEvents.drop(ei + 1).firstOrNull { it.type == TrackEventType.RESUME }
-            val endMs = resume?.timestampMs
-                ?: points.lastOrNull()?.timestampMs
-                ?: e.timestampMs
-            items.add(
+    /**
+     * 暂停：由录制的 PAUSE/RESUME 事件对精确计算（不做间隙启发式）。
+     * 暂停中结束（无配对 RESUME）→ 用 [lastPointMs] 作为暂停结束。
+     */
+    fun pausesFromEvents(events: List<TrackEvent>, lastPointMs: Long?): List<TlItem.Pause> {
+        val sortedEvents = events.sortedBy { it.timestampMs }
+        val pauses = ArrayList<TlItem.Pause>()
+        var i = 0
+        while (i < sortedEvents.size) {
+            val e = sortedEvents[i]
+            if (e.type != TrackEventType.PAUSE) {
+                i++
+                continue
+            }
+            var j = i + 1
+            while (j < sortedEvents.size && sortedEvents[j].type != TrackEventType.RESUME) j++
+            val endMs = if (j < sortedEvents.size) sortedEvents[j].timestampMs
+            else lastPointMs ?: e.timestampMs
+            pauses.add(
                 TlItem.Pause(
                     atMs = e.timestampMs,
                     pausedMs = (endMs - e.timestampMs).coerceAtLeast(0L),
                 ),
             )
-            ei = if (resume != null) sortedEvents.indexOf(resume) + 1 else sortedEvents.size
-        } else {
-            ei++
+            i = j + 1 // 跳过已配对的 RESUME
         }
+        return pauses
     }
 
-    if (points.isNotEmpty()) {
-        // 聚合点
+    /** 无媒体的点按 [BUCKET_MINUTES] 桶聚合成 [TlItem.Points]。 */
+    fun bucketPoints(points: List<TrackPoint>): List<TlItem.Points> {
+        if (points.isEmpty()) return emptyList()
         val bucketMs = BUCKET_MINUTES * 60_000L
         val buckets = LinkedHashMap<Long, MutableList<TrackPoint>>()
         for (p in points) {
             buckets.getOrPut(p.timestampMs / bucketMs) { mutableListOf() }.add(p)
         }
-        for ((_, pts) in buckets) {
-            if (pts.isNotEmpty()) {
-                items.add(TlItem.Points(pts.first().timestampMs, pts.last().timestampMs, pts.size))
+        return buckets.values.filter { it.isNotEmpty() }
+            .map { pts -> TlItem.Points(pts.first().timestampMs, pts.last().timestampMs, pts.size) }
+    }
+
+    /**
+     * 累计里程表：返回 `时间点 → 累计距离（米）` 的插值查询函数。
+     * 区间外取端点值，区间内线性插值。
+     */
+    fun cumulativeDistance(points: List<TrackPoint>): (Long) -> Double {
+        if (points.isEmpty()) return { 0.0 }
+        val cumList = ArrayList<Pair<Long, Double>>(points.size)
+        var acc = 0.0
+        for (i in points.indices) {
+            if (i > 0) {
+                acc += GeoMath.haversineMeters(
+                    points[i - 1].lat, points[i - 1].lng,
+                    points[i].lat, points[i].lng,
+                )
+            }
+            cumList.add(points[i].timestampMs to acc)
+        }
+        return { ms ->
+            when {
+                ms <= cumList.first().first -> cumList.first().second
+                ms >= cumList.last().first -> cumList.last().second
+                else -> {
+                    // 二分：找第一个 time >= ms 的点，线性插值
+                    var lo = 0
+                    var hi = cumList.lastIndex
+                    while (lo < hi) {
+                        val mid = (lo + hi) ushr 1
+                        if (cumList[mid].first < ms) lo = mid + 1 else hi = mid
+                    }
+                    val b = cumList[lo]
+                    val a = cumList[(lo - 1).coerceAtLeast(0)]
+                    val span = (b.first - a.first).toDouble()
+                    val frac = if (span <= 0) 0.0 else (ms - a.first) / span
+                    a.second + (b.second - a.second) * frac.coerceIn(0.0, 1.0)
+                }
             }
         }
     }
 
-    media.forEach { items.add(TlItem.Media(it)) }
-    val sorted = items.sortedByDescending { it.timeMs }
-
-    // ---- 相邻条目间的轨迹距离 → 线段高度 ----
-    // 累计里程表：时间点 → 累计距离（米），线性插值查询
-    val cumList = ArrayList<Pair<Long, Double>>(points.size)
-    var acc = 0.0
-    for (i in points.indices) {
-        if (i > 0) {
-            acc += GeoMath.haversineMeters(
-                points[i - 1].lat, points[i - 1].lng,
-                points[i].lat, points[i].lng,
-            )
-        }
-        cumList.add(points[i].timestampMs to acc)
-    }
-    fun cumAt(ms: Long): Double {
-        if (cumList.isEmpty()) return 0.0
-        if (ms <= cumList.first().first) return cumList.first().second
-        if (ms >= cumList.last().first) return cumList.last().second
-        // 二分：找第一个 time >= ms 的点，线性插值
-        var lo = 0
-        var hi = cumList.lastIndex
-        while (lo < hi) {
-            val mid = (lo + hi) ushr 1
-            if (cumList[mid].first < ms) lo = mid + 1 else hi = mid
-        }
-        val b = cumList[lo]
-        val a = cumList[(lo - 1).coerceAtLeast(0)]
-        val span = (b.first - a.first).toDouble()
-        val frac = if (span <= 0) 0.0 else (ms - a.first) / span
-        return a.second + (b.second - a.second) * frac.coerceIn(0.0, 1.0)
-    }
-    val heights = sorted.mapIndexed { i, item ->
-        val next = sorted.getOrNull(i + 1)
-        if (next == null) {
-            0f  // 起点：以下无线
-        } else {
-            // 本条时间 ≤ 下一条时间（倒序），距离 = 里程差
-            val stretchM = (cumAt(item.timeMs) - cumAt(next.timeMs)).coerceAtLeast(0.0)
-            distToLineDp(stretchM)
-        }
-    }
-    return sorted to heights
+    /** 轨迹距离 → 线段高度：1 公里 ≈ 48dp，上限 200dp。 */
+    fun distToLineDp(meters: Double): Float =
+        (meters / 1000.0 * 48.0).toFloat().coerceIn(0f, 200f)
 }
 
-/** 轨迹距离 → 线段高度：1 公里 ≈ 48dp，上限 200dp。 */
-private fun distToLineDp(meters: Double): Float =
-    (meters / 1000.0 * 48.0).toFloat().coerceIn(0f, 200f)
-
 // =============================================================================================
-// UI 行
+// 4. UI 行
 // =============================================================================================
 
 @Composable
@@ -405,12 +418,12 @@ private fun TimelineRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            // ★ 行高即线段长度（时间比例）；末行随内容
+            // 行高即线段长度（轨迹距离比例）；末行随内容
             .then(if (rowHeight != null) Modifier.height(rowHeight) else Modifier),
     ) {
         // ---- 左侧：时间 + 节点轴 ----
-        // ★ 轴线用 weight(1f) 填满本行剩余高度：不同高度（媒体/标记）的行无缝衔接，
-        //    形成一条连续线段；isLast 行不画线 —— 线段终于起点，不是射线
+        // 轴线用 weight(1f) 填满本行剩余高度：不同高度（媒体/标记）的行无缝衔接，
+        // 形成一条连续线段；isLast 行不画线 —— 线段终于起点，不是射线
         Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(58.dp)) {
             Text(
                 timeFmt.format(Date(item.timeMs)),
@@ -521,6 +534,63 @@ private fun formatSpan(ms: Long): String {
         m > 0 -> "${m}分${s}秒"
         else -> "${s}秒"
     }
+}
+
+/** 媒体点击分流：照片进内置查看器，音视频交给系统播放器。 */
+private fun openMedia(
+    context: android.content.Context,
+    session: TrackSession,
+    record: TrackMediaRecord,
+    onViewPhoto: (TrackMediaRecord) -> Unit,
+) {
+    when (record.type) {
+        TrackMediaRecord.Type.PHOTO -> onViewPhoto(record)
+        else -> {
+            val file = session.resolve(record.filePath)
+            val mime = when (record.type) {
+                TrackMediaRecord.Type.VIDEO -> "video/mp4"
+                else -> "audio/mp4"
+            }
+            TrackShare.openMedia(context, file, mime)
+        }
+    }
+}
+
+/** 导出格式选择对话框。 */
+@Composable
+private fun ExportFormatDialog(
+    sessionName: String,
+    onDismiss: () -> Unit,
+    onExport: (TrackExporter.Format) -> Unit,
+) {
+    var format by remember { mutableStateOf(TrackExporter.Format.GPX) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("导出轨迹") },
+        text = {
+            Column {
+                Text(
+                    sessionName,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                @Suppress("DEPRECATION")
+                TrackExporter.Format.values().forEach { f ->
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = format == f, onClick = { format = f })
+                        Text(f.name)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onExport(format) }) { Text("导出并分享") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("取消") }
+        },
+    )
 }
 
 /** 媒体卡片：照片缩略图 / 音视频图标 + 时长。 */

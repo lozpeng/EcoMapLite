@@ -81,7 +81,7 @@ import org.cwcc.open.geokori.ui.material3.center.model.PoiItem
 import org.cwcc.open.geokori.ui.material3.center.model.PoiListItemV2
 import org.cwcc.open.geokori.ui.material3.center.model.QuickAction
 import org.cwcc.open.geokori.ui.material3.center.model.SearchHeaderV2
-
+import androidx.compose.animation.core.animateDpAsState
 /**
  * ToolBar 相对于 Sheet 的位置
  */
@@ -150,6 +150,21 @@ fun GeoKoriCenter(
     onVisibilityChanged: ((Boolean) -> Unit)? = null,  // 新增回调
     onToolbarHeightChanged: ((Dp) -> Unit)? = null,
     onFullyHiddenChanged: ((Boolean) -> Unit)? = null, // 新增回调：整体下拉隐藏状态
+    /**
+     * ★ 轨迹界面联动信号（录制 HUD / 回放 / 时间线 / 历史 / 卫星状态等全屏浮层是否激活）。
+     *
+     * 由调用方订阅 [org.kori.plugin.geo.track.TrackRecordingEngine.state] 及
+     * 各浮层状态后传入（true = 有浮层覆盖）。
+     *
+     * 行为：
+     *  · 信号 false → true：**只隐藏 Sheet**（ToolBar 保持可见），并记录"由本信号隐藏"
+     *  · 信号 true → false：若 Sheet 仍隐藏且是**本信号**隐藏的 →
+     *    恢复到 [FlexibleSheetValue.SlightlyExpanded]（轻度展开）
+     *
+     * 用专用通道而不是 isVisible 的原因：isVisible 隐藏的是整个组件（ToolBar 也没了），
+     * 且依赖外部记得翻转；本通道自恢复，杜绝"录完 Sheet 呼不出"。
+     */
+    trackOverlayActive: Boolean = false,
     toolbarItems: List<BottomToolbarItem> = defaultToolbarItems(),
     quickActions: List<QuickAction> = defaultQuickActions(),
     poiList: List<PoiItem> = defaultPoiList(),
@@ -244,9 +259,26 @@ fun GeoKoriCenter(
         }
     }
 
-    /* ---------- ToolBar 状态 ---------- */
-    var toolbarExpanded by remember { mutableStateOf(true) }
-    val toolbarHeight = if (toolbarExpanded) 72.dp else 56.dp
+    /* ---------- ToolBar 状态（与 Sheet 档位同步） ---------- */
+// Sheet 处于中/全展开 → ToolBar 完整展开（72dp，图标+文字）
+// Sheet 微展开/隐藏   → ToolBar 轻度展开（56dp，仅图标，减少对地图的遮挡）
+    val toolbarExpanded by remember(syncToolbarWithSheet) {
+        derivedStateOf {
+            !syncToolbarWithSheet || when (sheetState.currentValue) {
+                FlexibleSheetValue.IntermediatelyExpanded,
+                FlexibleSheetValue.FullyExpanded -> true
+                else -> false   // SlightlyExpanded / Hidden → 轻度展开
+            }
+        }
+    }
+    // 关键：Sheet 的留白与 ToolBar 共用同一份「动画中」的高度，
+    // 保证两者在动画过程中逐帧对齐，不会一快一慢
+    val toolbarHeight by animateDpAsState(
+        targetValue = if (toolbarExpanded) 72.dp else 56.dp,
+        animationSpec = tween(300),
+        label = "toolbar_height_sync"
+    )
+
     LaunchedEffect(toolbarHeight) {
         onToolbarHeightChanged?.invoke(toolbarHeight)
     }
@@ -317,6 +349,49 @@ fun GeoKoriCenter(
     // 外部强制隐藏/显示时，重置下拉隐藏状态，避免状态错乱
     LaunchedEffect(internalVisible) {
         if (!internalVisible) fullyHidden = false
+    }
+
+    /* ================================================================ */
+    /* ========== ★ 轨迹界面联动：浮层激活隐藏 Sheet，结束后恢复轻度展开 ========== */
+    /* ================================================================ */
+    // 记录"经历过轨迹浮层激活"，用于退出时恢复
+    var wasTrackOverlayActive by remember { mutableStateOf(false) }
+
+    // ★ ToolBar 上拉唤出 Sheet：拖动累计量（px）+ 触发阈值
+    var toolbarDragAcc by remember { mutableFloatStateOf(0f) }
+    val toolbarRevealThresholdPx = with(density) { 48.dp.toPx() }
+
+
+    // ★ key 同时观察 currentValue：隐藏动画 settle 到 Hidden 的瞬间会再触发本 effect，
+    //   杜绝"flag 已消费但 Sheet 尚未 Hidden / 状态未到位的竞态"
+    LaunchedEffect(trackOverlayActive, sheetState.currentValue) {
+        if (trackOverlayActive) {
+            wasTrackOverlayActive = true
+            // 浮层激活：仅藏 Sheet，ToolBar 保持
+            if (sheetState.currentValue != FlexibleSheetValue.Hidden) {
+                expectSheetHide = true
+                sheetState.hide()
+            }
+        } else if (wasTrackOverlayActive &&
+            (sheetState.currentValue == FlexibleSheetValue.Hidden || !sheetState.isVisible)
+        ) {
+            wasTrackOverlayActive = false
+            // ★ 浮层全部退出（如结束轨迹记录）：恢复 Sheet 到轻度展开（启动默认态）。
+            //   不追究 Sheet 是谁藏的（本信号或外部旧逻辑）——隐藏即恢复。
+            android.util.Log.d(
+                "GeoKoriCenter",
+                "[trackOverlay] restoring sheet: currentValue=${sheetState.currentValue}, isVisible=${sheetState.isVisible}",
+            )
+            try {
+                // 与"显式动画恢复"同路径，避免 trySnapTo 静默失败
+                sheetState.animateTo(FlexibleSheetValue.SlightlyExpanded)
+            } catch (e: Throwable) {
+                // 兜底：部分 FlexibleSheetState 实现 hide() 后置 isVisible=false，
+                // animateTo 依赖可见性——改走 show()（内部会处理可见性 + 展开）
+                android.util.Log.w("GeoKoriCenter", "[trackOverlay] animateTo failed: ${e.message}, fallback show()")
+                runCatching { sheetState.show() }
+            }
+        }
     }
 
     val screenHeightDp = screenHeight()
@@ -396,7 +471,7 @@ fun GeoKoriCenter(
                         modifier = Modifier
                             .fillMaxWidth()
                             .align(Alignment.BottomCenter)
-                            .padding(bottom = toolbarHeight)
+                            .padding(bottom = toolbarHeight)   // 动画值，与 ToolBar 同步伸缩
                     ) {
                         FlexibleBottomSheet(
                             sheetState = sheetState,
@@ -436,6 +511,20 @@ fun GeoKoriCenter(
                             .then(
                                 if (adaptiveToolbarWidth != null) Modifier.width(adaptiveToolbarWidth)
                                 else Modifier.fillMaxWidth()
+                            )
+                            // ★ Sheet 隐藏时，ToolBar 区域上拉 → 唤出轻度展开
+                            .draggable(
+                                state = rememberDraggableState { d -> toolbarDragAcc += -d },
+                                orientation = Orientation.Vertical,
+                                enabled = sheetState.currentValue == FlexibleSheetValue.Hidden,
+                                onDragStopped = {
+                                    if (toolbarDragAcc > toolbarRevealThresholdPx &&
+                                        sheetState.currentValue == FlexibleSheetValue.Hidden
+                                    ) {
+                                        scope.launch { sheetState.slightlyExpand() }
+                                    }
+                                    toolbarDragAcc = 0f
+                                },
                             ),
                         items = toolbarItems,
                         selectedItemId = currentSelectedToolbarId,
@@ -463,6 +552,20 @@ fun GeoKoriCenter(
                             .then(
                                 if (adaptiveToolbarWidth != null) Modifier.width(adaptiveToolbarWidth)
                                 else Modifier.fillMaxWidth()
+                            )
+                            // ★ Sheet 隐藏时，ToolBar 区域下拉（顶部模式向下展开）→ 唤出
+                            .draggable(
+                                state = rememberDraggableState { d -> toolbarDragAcc += d },
+                                orientation = Orientation.Vertical,
+                                enabled = sheetState.currentValue == FlexibleSheetValue.Hidden,
+                                onDragStopped = {
+                                    if (toolbarDragAcc > toolbarRevealThresholdPx &&
+                                        sheetState.currentValue == FlexibleSheetValue.Hidden
+                                    ) {
+                                        scope.launch { sheetState.slightlyExpand() }
+                                    }
+                                    toolbarDragAcc = 0f
+                                },
                             ),
                         items = toolbarItems,
                         selectedItemId = currentSelectedToolbarId,
