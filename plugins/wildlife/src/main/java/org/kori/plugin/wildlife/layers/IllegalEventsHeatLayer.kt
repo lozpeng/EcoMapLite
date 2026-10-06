@@ -1,6 +1,7 @@
 package org.kori.plugin.wildlife.layers
 
 import android.graphics.Color
+import android.util.Log
 import android.view.ViewGroup
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
@@ -17,6 +18,7 @@ import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.sources.GeoJsonOptions
 import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.geojson.FeatureCollection
+import timber.log.Timber
 
 /**
  * 盗猎事件热力图图层。
@@ -110,6 +112,10 @@ class IllegalEventsHeatLayer : BaseBizeLibreLayer() {
         }
     }
 
+    override fun onClearMapObjects() {
+        removeMapObjects()
+    }
+
     /** 数据就绪（主线程）：组装 热力/圆点/注记 三层 */
     override fun onCollectionLoaded(collection: FeatureCollection) {
         removeMapObjects()
@@ -128,10 +134,32 @@ class IllegalEventsHeatLayer : BaseBizeLibreLayer() {
         currentSession()?.addLayer(buildHeatmapLayer())
         currentSession()?.addLayer(buildCircleLayer())
         currentSession()?.addLayer(buildSymbolLayer())
+
+        // 数据重建后重放透明度与显隐（滑杆/相机状态可能已偏离默认值）
+        onAlphaChanged(mAlpha)
+        applyVisibilityByZoom(map?.cameraPosition?.zoom ?: 0.0, force = true)
     }
 
-    override fun onClearMapObjects() {
-        removeMapObjects()
+    override fun onAlphaChanged(alpha: Float) {
+        val s = map?.style ?: return
+        // 热力：zoom 必须保持顶层 interpolate 输入，alpha 折算进各 stop 输出
+        s.getLayer(HEATMAP_LAYER_ID)?.setProperties(
+            PropertyFactory.heatmapOpacity(
+                Expression.interpolate(
+                    Expression.linear(), Expression.zoom(),
+                    Expression.stop(6.0, 1.0 * alpha.toDouble()),
+                    Expression.stop(11.0, 0.7 * alpha.toDouble()),
+                ),
+            ),
+        )
+        // 圆点：原始 0.9
+        s.getLayer(CIRCLE_LAYER_ID)?.setProperties(
+            PropertyFactory.circleOpacity(0.9f * alpha),
+        )
+        // 注记：原始未设（=1.0）
+        s.getLayer(SYMBOL_LAYER_ID)?.setProperties(
+            PropertyFactory.textOpacity(alpha),
+        )
     }
 
     // =============================================================================================

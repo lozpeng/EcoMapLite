@@ -1,5 +1,6 @@
 package org.kori.plugin.geo.map.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
@@ -22,15 +24,20 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TriStateCheckbox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -45,8 +52,10 @@ import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import org.cwcc.open.geokori.map.MapLayerManager
 import org.kori.plugin.geo.map.layer.LayerFilter
 
 // =============================================================================================
@@ -127,12 +136,24 @@ fun MapLayersControl(
     // ---------- 分组配置 ----------
     groupKeyExtractor: (LayerEntry) -> String = LayerGroupNaming::groupKeyOf,
     groupDisplayName: (String) -> String = LayerGroupNaming::displayName,
-    groupDefaultExpanded: Boolean = true,
+    groupDefaultExpanded: Boolean = false,
+
+    // ---------- 业务图层（MapLayerManager 注册） ----------
+    /** 是否显示"业务图层"区 */
+    managerLayersEnabled: Boolean = true,
+    /**
+     * 可见性变化。null（默认）= 内置行为：优先软显隐，未存活/未实现且要求显示时
+     * 回落整层 toggle；非 null = 完全接管（自行调 MapLayerManager）。
+     */
+    onManagerLayerToggle: ((String, Boolean) -> Unit)? = null,
+    /** 透明度变化（0f~1f）。null（默认）= 直调 MapLayerManager.setOpacity。 */
+    onManagerLayerOpacity: ((String, Float) -> Unit)? = null,
 
     // ---------- 图层开关回调 ----------
     onLayerVisibilityChange: (String, Boolean) -> Unit = { _, _ -> },
     onLayersReset: (() -> Unit)? = null,
 ) {
+    val appContext = LocalContext.current.applicationContext
     var menuExpanded by remember { mutableStateOf(false) }
     var layersExpanded by remember { mutableStateOf(false) }
     val groupExpandedStates = remember { mutableStateMapOf<String, Boolean>() }
@@ -174,6 +195,12 @@ fun MapLayersControl(
                 )
             }
 
+            // ★ 订阅业务图层状态 + 修订计数：
+            //    states 覆盖 active/loading；软显隐/透明度变化内容不在 states 中
+            //    （StateFlow equals 去重），靠 revision 驱动重组
+            val managerStates by MapLayerManager.states.collectAsState()
+            val managerRevision by MapLayerManager.revision.collectAsState()
+
             DropdownMenu(
                 expanded = menuExpanded,
                 onDismissRequest = { menuExpanded = false },
@@ -201,6 +228,40 @@ fun MapLayersControl(
                             checked = overlay.enabled,
                             onCheckedChange = { onOverlayToggle(overlay.id, it) },
                         )
+                    }
+                }
+
+                // ==================== 业务图层（MapLayerManager） ====================
+                if (managerLayersEnabled) {
+                    val managerLayers = remember(managerStates, managerRevision) {
+                        MapLayerManager.registeredLayers()
+                    }
+                    if (managerLayers.isNotEmpty()) {
+                        if (baseMapOptions.isNotEmpty() || overlays.isNotEmpty()) SectionDivider()
+                        MenuSectionHeader("业务图层")
+                        managerLayers.forEach { entry ->
+                            ManagerLayerItem(
+                                entry = entry,
+                                onToggle = { wantVisible ->
+                                    val handler = onManagerLayerToggle
+                                    if (handler != null) {
+                                        handler(entry.fullId, wantVisible)
+                                    } else {
+                                        // 默认：软显隐；未存活/未实现且要求显示 → 整层开启
+                                        val handled = MapLayerManager
+                                            .setSoftVisible(entry.fullId, wantVisible)
+                                        if (!handled && wantVisible) {
+                                            MapLayerManager.toggle(entry.fullId, appContext)
+                                        }
+                                    }
+                                },
+                                onOpacity = { alpha ->
+                                    val handler = onManagerLayerOpacity
+                                    if (handler != null) handler(entry.fullId, alpha)
+                                    else MapLayerManager.setOpacity(entry.fullId, alpha)
+                                },
+                            )
+                        }
                     }
                 }
 
@@ -483,6 +544,104 @@ private fun LayerVisibilityItem(
             onCheckedChange = onToggle,
             modifier = Modifier.height(24.dp),
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ManagerLayerItem(
+    entry: MapLayerManager.RegisteredLayer,
+    onToggle: (Boolean) -> Unit,
+    onOpacity: (Float) -> Unit,
+) {
+    val label = entry.displayName ?: entry.layerId
+
+    // 透明度：非拖动时以管理器为准（切图层重开/外部调节后回显正确）；
+    // 拖动中用本地值保证跟手
+    var dragging by remember(entry.fullId) { mutableStateOf(false) }
+    var dragValue by remember(entry.fullId) { mutableFloatStateOf(entry.alpha) }
+    LaunchedEffect(entry.alpha) {
+        if (!dragging) dragValue = entry.alpha
+    }
+    val displayAlpha = if (dragging) dragValue else entry.alpha
+
+    Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onToggle(!entry.visible) },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = if (entry.active) {
+                        MaterialTheme.colorScheme.onSurface
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+                if (!entry.active) {
+                    Text(
+                        text = "未开启",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Switch(
+                checked = entry.visible,
+                onCheckedChange = onToggle,
+                enabled = entry.active,
+                modifier = Modifier.height(24.dp),
+            )
+        }
+
+        // 透明度滑杆（仅存活图层可调）
+        if (entry.active) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Slider(
+                    value = displayAlpha,
+                    onValueChange = {
+                        dragging = true
+                        dragValue = it
+                        onOpacity(it)
+                    },
+                    onValueChangeFinished = { dragging = false },
+                    modifier = Modifier.weight(1f),
+                    enabled = entry.visible,
+                    thumb = {
+                        // 实心圆圈 thumb
+                        Box(
+                            Modifier
+                                .size(16.dp)
+                                .background(
+                                    if (entry.visible) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.outline
+                                    },
+                                    CircleShape,
+                                ),
+                        )
+                    },
+                )
+                Text(
+                    text = "${(displayAlpha * 100).toInt()}%",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            }
+        }
     }
 }
 

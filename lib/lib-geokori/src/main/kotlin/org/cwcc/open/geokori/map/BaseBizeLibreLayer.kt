@@ -45,7 +45,13 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /**
- * 野生生物插件图层抽象基类（抽象类，不参与框架扫描注册）。
+ * 业务图层抽象基类（抽象类，不参与框架扫描注册）。
+ *
+ * 已实现框架可选能力：
+ *  · [RefreshableLayer] —— MapLayerManager.refresh(id) 强制重拉
+ *  · [VisibilityControllableLayer] —— 控制面板"可见"开关（软显隐，复用 setVisible）
+ *  · 透明度 —— 控制面板透明度滑杆；基类记账 [mAlpha]，子类覆盖
+ *    [onAlphaChanged] 对具体 style layer 调 opacity 属性
  *
  * 已托管的通用能力，具体图层只需实现 4 个抽象点：
  *  · [cacheDataFile] / [cacheMetaFile]  本地缓存文件名
@@ -65,7 +71,7 @@ import java.net.URL
  * 生命周期默认实现：onAttach 自动 [loadCollection]，onDetach 自动 [onClearMapObjects]。
  * 子类如需覆盖 onAttach/onDetach，务必调用 super。
  */
-abstract class BaseBizeLibreLayer : LibreMapLayer(), RefreshableLayer {
+abstract class BaseBizeLibreLayer : LibreMapLayer(), RefreshableLayer, VisibilityControllableLayer {
 
     // =========================================================================================
     // 子类配置（抽象点）
@@ -109,6 +115,10 @@ abstract class BaseBizeLibreLayer : LibreMapLayer(), RefreshableLayer {
     @Volatile
     protected var isLoaded = false
 
+    /** 当前透明度（0f~1f，控制面板滑杆驱动；基类记账，子类经 [onAlphaChanged] 应用） */
+    @Volatile
+    protected var mAlpha = 1f
+
     // =========================================================================================
     // 生命周期默认实现
     // =========================================================================================
@@ -133,6 +143,21 @@ abstract class BaseBizeLibreLayer : LibreMapLayer(), RefreshableLayer {
     }
 
     fun isVisible(): Boolean = mVisible
+
+    /** 控制面板"可见"开关：软显隐（数据保留，仅隐藏显示） */
+    override fun setSoftVisible(visible: Boolean) = setVisible(visible)
+
+    /**
+     * 透明度入口（MapLayerManager.setOpacity 触发）。
+     * final：基类负责 [mAlpha] 记账，实际样式调整在 [onAlphaChanged]。
+     */
+    final override fun applyAlpha(alpha: Float) {
+        mAlpha = alpha
+        onAlphaChanged(alpha)
+    }
+
+    /** 子类实现：把 [alpha] 应用到自己的 style layers（heatmap/circle/symbol...） */
+    protected open fun onAlphaChanged(alpha: Float) {}
 
     /** 强制重拉（删除本地缓存 + 重建）。经 MapLayerManager.refresh 触发。 */
     override fun refresh() {
@@ -265,18 +290,15 @@ abstract class BaseBizeLibreLayer : LibreMapLayer(), RefreshableLayer {
             connection?.disconnect()
         }
     }
-
     // =========================================================================================
     // 图层构建助手
     // =========================================================================================
 
     // ---- 热力图 ----
 
-    // 注意：不显式声明数组类型（推断为 Array<Expression.Stop>），
-    // 与原版 IllegalEventsHeatLayer 一致，spread 进 interpolate vararg 协变安全
     // 注意：以下 stops 均为未显式类型的 arrayOf val（推断 Array<Expression.Stop>），
-    // 与原版 IllegalEventsHeatLayer 完全同构 —— spread 进 interpolate vararg 协变安全。
-    // 子类如需自定义，直接 override 同名 val 即可（同样不显式声明类型）。
+    // spread 进 interpolate vararg 协变安全；子类如需自定义，override 同名 val
+    // 即可（同样不显式声明类型）。
     protected open val heatmapColorStops = arrayOf(
         Expression.stop(0.0, Expression.rgba(33, 102, 172, 0.0)),
         Expression.stop(0.2, Expression.rgba(103, 169, 207, 1.0)),

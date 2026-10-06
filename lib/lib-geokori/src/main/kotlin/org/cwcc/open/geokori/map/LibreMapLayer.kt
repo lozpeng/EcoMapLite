@@ -199,11 +199,30 @@ abstract class LibreMapLayer {
     protected fun notifyFailed() {
         MapLayerManager.notifyLayerState(this, failed = true)
     }
+
+    /**
+     * 透明度调节（0f~1f，由 MapLayerManager.setOpacity 触发）。
+     * 默认空实现（无透明度概念的图层忽略）；有透明度语义的子类覆盖，
+     * 对其 style layers 的 opacity 属性做等比调整。
+     */
+    protected open fun applyAlpha(alpha: Float) {}
+
+    /** 框架/管理器调用入口。 */
+    fun setLayerAlpha(alpha: Float) = applyAlpha(alpha.coerceIn(0f, 1f))
 }
 
 /** 可选能力：支持外部触发刷新（[MapLayerManager.refresh] 入口）。 */
 interface RefreshableLayer {
     fun refresh()
+}
+
+/**
+ * 可选能力：支持软显隐（不卸载数据，仅隐藏/显示）。
+ * BaseWildLifeLayer 已基于既有 setVisible 实现——子类无需重复劳动；
+ * 未实现本接口的图层在控制面板上"关"= 整层卸载。
+ */
+interface VisibilityControllableLayer {
+    fun setSoftVisible(visible: Boolean)
 }
 
 /**
@@ -239,8 +258,26 @@ object MapLayerManager {
 
     private val liveLayers = ConcurrentHashMap<String, LibreMapLayer>()
 
+    /** 软显隐状态（false = 数据保留但隐藏）；toggle 关闭分支时清除 */
+    private val softHidden = ConcurrentHashMap<String, Boolean>()
+
+    /** 各图层透明度（0f~1f）；toggle 关闭分支时清除 */
+    private val opacityOf = ConcurrentHashMap<String, Float>()
+
     private val _states = MutableStateFlow<Map<String, MapLayerState>>(emptyMap())
     val states: StateFlow<Map<String, MapLayerState>> = _states.asStateFlow()
+
+    /**
+     * 控制面板修订计数：states 之外的变更（软显隐/透明度）内容不体现在
+     * MapLayerState 里，StateFlow 会按 equals 去重吞掉事件——
+     * 故单独维护自增计数，UI 以此驱动重组。
+     */
+    private val _revision = MutableStateFlow(0)
+    val revision: StateFlow<Int> = _revision.asStateFlow()
+
+    private fun bumpRevision() {
+        _revision.value += 1
+    }
 
     // -------------------------------------------------------------------------
     // 注册 / 绑定
@@ -347,6 +384,63 @@ object MapLayerManager {
         liveLayers.entries.firstOrNull { it.value === layer }?.key
 
     // -------------------------------------------------------------------------
+    // 业务图层控制（供图层控制面板使用）
+    // -------------------------------------------------------------------------
+
+    /** 控制面板条目 */
+    data class RegisteredLayer(
+        val fullId: String,
+        val layerId: String,
+        val displayName: String?,
+        val active: Boolean,
+        val visible: Boolean,
+        /** 当前透明度（0f~1f），控制面板滑杆回显用 */
+        val alpha: Float,
+    )
+
+    /** 全部已注册业务图层（active=存活，visible=软显隐状态，alpha=透明度） */
+    fun registeredLayers(): List<RegisteredLayer> =
+        registrations.keys.sorted().map { fid ->
+            RegisteredLayer(
+                fullId = fid,
+                layerId = fid.substringAfter(':'),
+                displayName = liveLayers[fid]?.displayName,
+                active = liveLayers.containsKey(fid),
+                visible = softHidden[fid] != true,
+                alpha = opacityOf[fid] ?: 1f,
+            )
+        }
+
+    /**
+     * 软显隐：图层保持存活、数据不卸载，仅切换可见性。
+     * 图层实现 [VisibilityControllableLayer] 时生效返回 true；
+     * 未实现（或图层未存活且要求显示）返回 false —— 调用方可回落 toggle。
+     */
+    fun setSoftVisible(id: String, visible: Boolean): Boolean {
+        val fid = resolveFullId(id) ?: return false
+        val layer = liveLayers[fid] as? VisibilityControllableLayer ?: return false
+        runCatching { layer.setSoftVisible(visible) }
+        if (visible) softHidden.remove(fid) else softHidden[fid] = true
+        bumpRevision()   // states 内容无变化，靠 revision 驱动面板重组
+        return true
+    }
+
+    /** 查询软显隐状态（默认 true） */
+    fun isSoftVisible(id: String): Boolean = softHidden[resolveFullId(id)] != true
+
+    /** 透明度调节（0f~1f）；图层未覆盖 applyAlpha 时为空操作，返回是否存活。 */
+    fun setOpacity(id: String, alpha: Float): Boolean {
+        val fid = resolveFullId(id) ?: return false
+        val layer = liveLayers[fid] ?: return false
+        val a = alpha.coerceIn(0f, 1f)
+        runCatching { layer.setLayerAlpha(a) }
+            .onFailure { Log.e("MapLayerManager", "setOpacity($fid, $a) 应用失败", it) }
+        opacityOf[fid] = a
+        bumpRevision()
+        return true
+    }
+
+    // -------------------------------------------------------------------------
     // 开关 / 刷新 / 卸载
     // -------------------------------------------------------------------------
 
@@ -368,6 +462,8 @@ object MapLayerManager {
         liveLayers[fid]?.let { layer ->
             runCatching { layer.detachInternal() }
             liveLayers.remove(fid)
+            softHidden.remove(fid)
+            opacityOf.remove(fid)
             update(fid, MapLayerState(active = false, loading = false))
             Toast.makeText(appCtx, "已关闭「${layer.displayName}」", Toast.LENGTH_SHORT).show()
             return true
@@ -455,6 +551,6 @@ object MapLayerManager {
     private var appContextRef: Context? = null
 
     private fun update(fullId: String, state: MapLayerState) {
-        _states.value = _states.value + (fullId to state)
+        _states.value += (fullId to state)
     }
 }
