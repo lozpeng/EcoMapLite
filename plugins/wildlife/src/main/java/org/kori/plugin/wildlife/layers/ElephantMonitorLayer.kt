@@ -604,7 +604,6 @@ private fun FullscreenImageViewer(
             var scale by remember { mutableFloatStateOf(1f) }
             var offset by remember { mutableStateOf(Offset.Zero) }
 
-            // 双击切换：放大 2.5x / 还原（缓动动画）
             val animScale = remember { Animatable(1f) }
             val scope = rememberCoroutineScope()
             var zoomed by remember { mutableStateOf(false) }
@@ -615,12 +614,21 @@ private fun FullscreenImageViewer(
                 modifier = Modifier
                     .align(Alignment.Center)
                     .graphicsLayer {
-                        scaleX = animScale.value
-                        scaleY = animScale.value
+                        scaleX = scale
+                        scaleY = scale
                         translationX = offset.x
                         translationY = offset.y
                     }
-                    // 双击手势与缩放手势分层注册，互不干扰
+                    // ★ 顺序1：变换手势优先 —— 只消费产生位移/缩放的事件，
+                    //    轻点/双击事件不被它消费，自然穿透到后面的 tap 检测
+                    .pointerInput(Unit) {
+                        detectTransformGestures { _, pan, zoom, _ ->
+                            if (animScale.isRunning) return@detectTransformGestures
+                            scale = (scale * zoom).coerceIn(1f, 6f)
+                            offset = if (scale > 1f) offset + pan else Offset.Zero
+                        }
+                    }
+                    // ★ 顺序2：双击检测（轻点事件穿透到这里）
                     .pointerInput(Unit) {
                         detectTapGestures(
                             onDoubleTap = {
@@ -628,24 +636,12 @@ private fun FullscreenImageViewer(
                                 zoomed = !zoomed
                                 scope.launch {
                                     val target = if (zoomed) 2.5f else 1f
-                                    animScale.animateTo(target)
-                                    scale = target
+                                    animScale.snapTo(scale)
+                                    animScale.animateTo(target) { scale = value }  // 每帧回写渲染源
                                     if (!zoomed) offset = Offset.Zero
                                 }
                             },
                         )
-                    }
-                    .pointerInput(Unit) {
-                        detectTransformGestures { _, pan, zoom, _ ->
-                            // 动画进行中不接管手势，避免状态打架
-                            if (animScale.isRunning) return@detectTransformGestures
-                            scale = (scale * zoom).coerceIn(1f, 6f)
-                            if (scale > 1f) {
-                                offset += pan
-                            } else {
-                                offset = Offset.Zero
-                            }
-                        }
                     },
             )
 
