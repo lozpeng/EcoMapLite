@@ -10,6 +10,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import com.combo.core.component.activity.BaseHostActivity
 import com.combo.core.runtime.PluginManager
+import org.cwcc.open.geokori.permission.AppPermissionGate
 
 class HostActivity : BaseHostActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -17,6 +18,8 @@ class HostActivity : BaseHostActivity() {
         if (super.pluginActivity == null) {
             enableEdgeToEdge()
             setContent {
+                AppPermissionGate() //请求授权
+
                 val resources by PluginManager.resourcesManager.mResourcesFlow.collectAsState()
                 key(resources) {
                     LoadingScreen()

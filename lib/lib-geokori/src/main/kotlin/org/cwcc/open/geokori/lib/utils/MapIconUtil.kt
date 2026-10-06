@@ -6,8 +6,10 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.RectF
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffColorFilter
 import android.graphics.drawable.BitmapDrawable
@@ -29,19 +31,28 @@ import java.io.StringReader
  *
  * 以两个 SVG 底板图标（地图标注 / 标注）为基础：
  *  - 底板颜色、替换图标颜色均可设置
- *  - 中心区域可叠放任意数量的 Drawable 资源（多个图标自动居中叠层）
+ *  - 中心区域可叠放任意数量的内嵌图标（资源 ID / Drawable / Bitmap 均可，
+ *    多个图标自动居中叠层），支持圆形裁剪 + 描边（照片缩略图场景）
  *  - 可选"白色圆盘 + 彩色图标"双层效果
  *  - 支持直接生成 [Bitmap] / [VectorDrawable] / [Drawable] 对象，
  *    或导出 PNG 文件、VectorDrawable XML 文件（均可指定大小）
  *
  * 用法示例：
  * ```
+ * // 1. 常规资源图标叠层
  * val marker = MapIconUtil(context)
  *     .base(MapIconUtil.BaseType.PIN_WITH_BASE)               // 底板类型
  *     .baseColor(0xFF1E88E5.toInt())                          // 底板颜色
  *     .innerDisc(Color.WHITE)                                 // 中心白色圆盘（可选）
  *     .inner(R.drawable.ic_gas_station, Color.RED, 0.6f)      // 叠放图标1（占圆盘60%）
  *     .inner(R.drawable.ic_bolt, Color.YELLOW, 0.35f)         // 叠放图标2（居中叠加）
+ *
+ * // 2. 照片缩略图圆贴（相机缩略图、头像等位图场景）
+ * val photoMarker = MapIconUtil(context)
+ *     .base(MapIconUtil.BaseType.MAP_PIN)
+ *     .baseColor(0xFF1E88E5.toInt())
+ *     .innerDisc(Color.WHITE)
+ *     .innerCircle(thumbBitmap, scale = 1.0f, ringColor = Color.WHITE)
  *
  * imageView.setImageBitmap(marker.generateBitmap(96))         // Bitmap 对象
  * imageView.setImageDrawable(marker.generateVectorDrawable()) // VectorDrawable 对象
@@ -50,7 +61,8 @@ import java.io.StringReader
  * ```
  *
  * 注意：矢量输出要求替换图标是 VectorDrawable（res/drawable 或 res/raw 中的
- * <vector> XML），只有矢量图才能合并 path；PNG/Bitmap 输出支持任意 Drawable。
+ * <vector> XML 资源），只有矢量图才能合并 path；PNG/Bitmap 输出支持任意
+ * Drawable / Bitmap（含圆形裁剪）。
  */
 class MapIconUtil(private val context: Context) {
 
@@ -118,13 +130,26 @@ class MapIconUtil(private val context: Context) {
         ),
     }
 
-    /** 中心叠放的替换图标 */
-    class InnerIcon(
+    /**
+     * 中心叠放的内嵌图标。
+     *
+     * [drawable] 与 [resId] 二选一：[resId] 用于资源引用（矢量输出也可用），
+     * [drawable] 用于运行时对象（Drawable / Bitmap，仅 PNG/Bitmap 输出可用）。
+     */
+    class InnerIcon internal constructor(
         @AnyRes val resId: Int,
+        /** 运行时图标对象（优先于 resId）；Bitmap 会被包装为 [BitmapDrawable] */
+        val drawable: Drawable?,
         /** 应用到图标上的颜色，null 保留原色 */
         @ColorInt val tint: Int?,
         /** 相对中心空白区的缩放系数（0~1），多个图标各自独立 */
         val scale: Float,
+        /** true：将图标圆形裁剪进中心圆（cover 填充），并绘制可选描边 */
+        val circleClip: Boolean = false,
+        /** 圆形裁剪后的描边颜色，null 不描边 */
+        @ColorInt val ringColor: Int? = null,
+        /** 描边宽度占图标边长的比例 */
+        val ringRatio: Float = 0.03f,
     )
 
     // ============================== 可配置参数 ==============================
@@ -151,17 +176,79 @@ class MapIconUtil(private val context: Context) {
     fun baseColor(@ColorInt color: Int) = apply { baseColor = color }
 
     /**
-     * 在中心区域叠放一个替换图标，可多次调用形成多层叠放。
+     * 在中心区域叠放一个资源图标，可多次调用形成多层叠放。
      * 按调用顺序依次绘制（后调用的在上层），均自动居中。
      *
-     * @param resId 任意资源 ID（drawable 或 raw；PNG/JPEG/Vector 均可，
-     *              矢量输出时必须是 vector）
-     * @param tint  图标颜色，null 保留图标原色
-     * @param scale 相对中心空白区的缩放系数（0~1），如 1.0 占满、0.5 半大
+     * @param resId      任意资源 ID（drawable 或 raw；PNG/JPEG/Vector 均可，
+     *                   矢量输出时必须是 vector）
+     * @param tint       图标颜色，null 保留图标原色
+     * @param scale      相对中心空白区的缩放系数（0~1），如 1.0 占满、0.5 半大
+     * @param circleClip true 时图标按中心圆裁剪（cover 填充），适合方形位图
      */
-    fun inner(@AnyRes resId: Int, @ColorInt tint: Int? = Color.WHITE, scale: Float = 1.0f) = apply {
-        inners += InnerIcon(resId, tint, scale.coerceIn(0.05f, 1.5f))
+    fun inner(
+        @AnyRes resId: Int,
+        @ColorInt tint: Int? = Color.WHITE,
+        scale: Float = 1.0f,
+        circleClip: Boolean = false,
+    ) = apply {
+        inners += InnerIcon(resId, null, tint, scale.coerceIn(0.05f, 1.5f), circleClip)
     }
+
+    /**
+     * 在中心区域叠放一个 [Drawable]（运行时对象，无需资源 ID）。
+     * 仅 PNG/Bitmap 输出支持；矢量输出会抛出异常。
+     *
+     * @param tint 图标颜色，null 保留原色（位图默认 null）
+     */
+    fun inner(
+        drawable: Drawable,
+        @ColorInt tint: Int? = null,
+        scale: Float = 1.0f,
+        circleClip: Boolean = false,
+    ) = apply {
+        inners += InnerIcon(0, drawable.mutate(), tint, scale.coerceIn(0.05f, 1.5f), circleClip)
+    }
+
+    /** 在中心区域叠放一个 [Bitmap]（包装为 BitmapDrawable），规则同 [inner] */
+    fun inner(
+        bitmap: Bitmap,
+        @ColorInt tint: Int? = null,
+        scale: Float = 1.0f,
+        circleClip: Boolean = false,
+    ) = inner(BitmapDrawable(context.resources, bitmap), tint, scale, circleClip)
+
+    /**
+     * 圆形裁剪内嵌（照片缩略图 / 头像场景便捷入口）：
+     * 图标按中心圆 cover 裁剪 + 描边压边。等价于
+     * `inner(drawable, tint = null, scale, circleClip = true)` + 描边。
+     *
+     * @param ringColor 描边颜色，null 不描边；默认白色（配白色圆盘最常用）
+     * @param ringRatio 描边宽度占图标直径的比例（默认 3%）
+     */
+    fun innerCircle(
+        drawable: Drawable,
+        scale: Float = 1.0f,
+        @ColorInt ringColor: Int? = Color.WHITE,
+        ringRatio: Float = 0.03f,
+    ) = apply {
+        inners += InnerIcon(
+            resId = 0,
+            drawable = drawable.mutate(),
+            tint = null,
+            scale = scale.coerceIn(0.05f, 1.5f),
+            circleClip = true,
+            ringColor = ringColor,
+            ringRatio = ringRatio.coerceIn(0.005f, 0.2f),
+        )
+    }
+
+    /** [innerCircle] 的 Bitmap 版本 */
+    fun innerCircle(
+        bitmap: Bitmap,
+        scale: Float = 1.0f,
+        @ColorInt ringColor: Int? = Color.WHITE,
+        ringRatio: Float = 0.03f,
+    ) = innerCircle(BitmapDrawable(context.resources, bitmap), scale, ringColor, ringRatio)
 
     /** 清除所有中心替换图标（纯底板） */
     fun clearInners() = apply { inners.clear() }
@@ -266,7 +353,8 @@ class MapIconUtil(private val context: Context) {
         top: Float,
         sizePx: Float,
     ) {
-        val drawable = ContextCompat.getDrawable(context, icon.resId)!!.mutate()
+        val drawable = icon.drawable
+            ?: ContextCompat.getDrawable(context, icon.resId)!!.mutate()
         drawable.setBounds(
             left.toInt(), top.toInt(),
             (left + sizePx).toInt(), (top + sizePx).toInt(),
@@ -275,7 +363,31 @@ class MapIconUtil(private val context: Context) {
             // SRC_IN：只给图标不透明部分着色，透明区保持透明
             drawable.colorFilter = PorterDuffColorFilter(it, PorterDuff.Mode.SRC_IN)
         }
+
+        if (!icon.circleClip) {
+            drawable.draw(canvas)
+            return
+        }
+
+        // 圆形裁剪：cover 填充进中心圆 + 可选描边压边
+        val cx = left + sizePx / 2f
+        val cy = top + sizePx / 2f
+        val r = sizePx / 2f
+        val saveCount = canvas.save()
+        canvas.clipPath(Path().apply { addCircle(cx, cy, r, Path.Direction.CCW) })
         drawable.draw(canvas)
+        canvas.restoreToCount(saveCount)
+
+        icon.ringColor?.let { ring ->
+            canvas.drawCircle(
+                cx, cy, r,
+                Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    style = Paint.Style.STROKE
+                    color = ring
+                    strokeWidth = sizePx * icon.ringRatio
+                },
+            )
+        }
     }
 
     /** 生成可直接用于 ImageView / 地图 Marker 的 [BitmapDrawable] */
@@ -343,6 +455,9 @@ class MapIconUtil(private val context: Context) {
      * 底板 path 使用 [baseColor]；圆盘为填充圆 path；替换图标 path 经 group
      * 缩放平移到中心空白区并使用各自颜色。
      *
+     * 注意：内嵌图标必须是资源引用的 <vector>（[InnerIcon.resId]）；
+     * Drawable / Bitmap / 圆形裁剪内嵌仅 PNG/Bitmap 输出支持，此处会抛异常。
+     *
      * @param sizeDp 矢量图的声明尺寸（矢量可任意缩放，此值仅为默认显示大小）
      */
     fun generateVectorXml(sizeDp: Int = 24): String {
@@ -370,7 +485,11 @@ class MapIconUtil(private val context: Context) {
 
         // 3. 中心叠放图标：每个图标一个 group，缩放到对应尺寸并居中
         val area = iconAreaDiameter()
-        for (icon in inners) {
+        for ((index, icon) in inners.withIndex()) {
+            check(icon.drawable == null) {
+                "第 ${index + 1} 个内嵌图标是运行时 Drawable/Bitmap（或启用了圆形裁剪），" +
+                        "矢量输出仅支持资源引用的 <vector> 图标；请改用 PNG/Bitmap 输出"
+            }
             val (vw, vh, paths) = parseInnerVector(icon.resId)
             val d = area * icon.scale
             val s = d / maxOf(vw, vh)               // 等比缩放到目标区域
@@ -442,6 +561,106 @@ class MapIconUtil(private val context: Context) {
         fun drawableFromPng(context: Context, pngBytes: ByteArray): Drawable {
             val bmp = BitmapFactory.decodeByteArray(pngBytes, 0, pngBytes.size)
             return BitmapDrawable(context.resources, bmp)
+        }
+
+        // =================================================================================
+        // 照片气泡针（图2风格）：圆角矩形照片（白边）+ 底部三角尾巴
+        // 独立于实例状态，任意处直接 MapIconUtil.photoPin(...) 调用。
+        // =================================================================================
+
+        /** 占位照片区默认底色（无底图时） */
+        @ColorInt
+        private val PHOTO_PIN_PLACEHOLDER: Int = 0xFFE0E0E0.toInt()
+
+        /**
+         * 合成"照片气泡针"位图：圆角矩形照片（白色边框）+ 底部居中三角尾巴。
+         *
+         * 布局（[sizePx] 方形画布）：
+         *  · 照片区：居中偏上圆角矩形，cover 填充 [photo]（null 时填 [placeholderColor]）；
+         *  · 尾巴：底边居中下三角，与边框同色一体成型。
+         * 尾巴底端即图标底端——地图符号层 `iconAnchor = bottom` 时精确锚定坐标点。
+         *
+         * @param photo            缩略图（任意尺寸，自动 cover 缩放）；null = 占位样式
+         * @param sizePx           输出边长像素（建议 144~192）
+         * @param frameColor       边框/尾巴颜色（默认白）
+         * @param placeholderColor 无底图时照片区填充色（默认浅灰）
+         * @param photoRatio       照片区边长占画布比例（默认 0.68，余量留给尾巴）
+         * @param cornerRatio      圆角半径占画布比例（默认 0.10）
+         */
+        fun photoPin(
+            photo: Bitmap?,
+            sizePx: Int,
+            @ColorInt frameColor: Int = Color.WHITE,
+            @ColorInt placeholderColor: Int = PHOTO_PIN_PLACEHOLDER,
+            photoRatio: Float = 0.68f,
+            cornerRatio: Float = 0.10f,
+            tailHalfRatio: Float = 0.085f,
+            tailLenRatio: Float = 0.18f,
+            strokeRatio: Float = 0.035f,
+        ): Bitmap {
+            require(sizePx > 0) { "sizePx 必须大于 0" }
+            val out = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(out)
+
+            val photoSide = sizePx * photoRatio
+            val left = (sizePx - photoSide) / 2f
+            val top = sizePx * 0.05f
+            val radius = sizePx * cornerRatio
+            val tailHalf = sizePx * tailHalfRatio
+            val tailLen = sizePx * tailLenRatio
+            val stroke = sizePx * strokeRatio
+
+            // 1) 边框 + 尾巴（一次 path，底即框）
+            val frame = Path().apply {
+                addRoundRect(
+                    RectF(left, top, left + photoSide, top + photoSide),
+                    radius, radius, Path.Direction.CW,
+                )
+                moveTo(sizePx / 2f - tailHalf, top + photoSide - stroke)
+                lineTo(sizePx / 2f + tailHalf, top + photoSide - stroke)
+                lineTo(sizePx / 2f, top + photoSide + tailLen)
+                close()
+            }
+            canvas.drawPath(
+                frame,
+                Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = frameColor
+                    style = Paint.Style.FILL
+                },
+            )
+
+            // 2) 照片区：内缩描边后圆角裁剪，cover 填充（null 时占位色）
+            val inner = RectF(
+                left + stroke, top + stroke,
+                left + photoSide - stroke, top + photoSide - stroke,
+            )
+            canvas.save()
+            canvas.clipPath(
+                Path().apply {
+                    addRoundRect(inner, radius * 0.75f, radius * 0.75f, Path.Direction.CCW)
+                },
+            )
+            if (photo != null) {
+                val scale = maxOf(inner.width() / photo.width, inner.height() / photo.height)
+                canvas.drawBitmap(
+                    photo,
+                    Matrix().apply {
+                        setScale(scale, scale)
+                        postTranslate(
+                            inner.centerX() - photo.width * scale / 2f,
+                            inner.centerY() - photo.height * scale / 2f,
+                        )
+                    },
+                    null,
+                )
+            } else {
+                canvas.drawRect(
+                    inner,
+                    Paint(Paint.ANTI_ALIAS_FLAG).apply { color = placeholderColor },
+                )
+            }
+            canvas.restore()
+            return out
         }
     }
 }

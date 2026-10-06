@@ -32,7 +32,9 @@ data class MapLayerState(
  *  · 推荐：直接继承本类 —— 插件 Session 打开时框架扫描插件类，
  *    非抽象子类自动注册（可用 [@GeoKoriLayer] 指定 id，默认类名首字母小写）；
  *  · 手动：任意处调 MapLayerManager.register(layerId) { XxxLayer() }，
- *    在 Session 绑定时按 ClassLoader 归队。
+ *    在 Session 绑定时按 ClassLoader 归队；
+ *  · ★ 框架级：MapLayerManager.registerFramework(layerId) { XxxLayer() } ——
+ *    不归属任何插件，attach 到地图主 Session（见 [MapLayerManager.registerFramework]）。
  *
  * 生命周期：
  *  ```
@@ -236,8 +238,22 @@ interface VisibilityControllableLayer {
  *         [LibreMapLayer] 非抽象子类自动注册
  *  · fullId = "pluginId:layerId"，扫描完成后 states 更新，UI 开关自动出现
  *  · 跨插件 layerId 冲突：响亮警告并跳过（不会静默覆盖）
+ *
+ * ★ 框架级图层（[registerFramework]）：
+ *  · 不归属任何插件，fullId = "__framework__:layerId"，注册即生效（立即注册通道）；
+ *  · toggle 开启分支的 Session 解析：owner = [FRAMEWORK_OWNER] 时直接取
+ *    [MapRuntime.mainSession]（地图主 Session），不经过插件解析 ——
+ *    因此开关不要求任何插件加载，修复"插件未加载"误报；
+ *  · 地图主 Session 未就绪时开启 → 记入 [pendingFramework]，待
+ *    [onMainSessionReady]（MapRuntime 创建主 Session 处调用）自动补开，不丢状态。
  */
 object MapLayerManager {
+
+    /**
+     * ★ 框架级图层的保留 owner 段（fullId = "__framework__:layerId"）。
+     * 真实插件 id 不会取这种格式（冲突时也只是多一个同名开关，行为正确）。
+     */
+    const val FRAMEWORK_OWNER = "__framework__"
 
     private class Registration(
         val layerId: String,
@@ -264,6 +280,12 @@ object MapLayerManager {
 
     /** 各图层透明度（0f~1f）；toggle 关闭分支时清除 */
     private val opacityOf = ConcurrentHashMap<String, Float>()
+
+    /**
+     * ★ 框架图层待决开关：主 Session 未就绪时 enable 先记账，
+     *   key = fullId；[onMainSessionReady] 消费。
+     */
+    private val pendingFramework = ConcurrentHashMap<String, Boolean>()
 
     private val _states = MutableStateFlow<Map<String, MapLayerState>>(emptyMap())
     val states: StateFlow<Map<String, MapLayerState>> = _states.asStateFlow()
@@ -304,6 +326,24 @@ object MapLayerManager {
         update(fid, _states.value[fid] ?: MapLayerState())
         pending.remove(layerId)
     }
+
+    /**
+     * ★ 注册框架级图层：不归属任何插件，attach 到地图主 Session，
+     *   开关不要求任何插件加载。幂等（已注册则忽略）。
+     *
+     * 走既有的立即注册通道（owner = [FRAMEWORK_OWNER]），因此
+     * isRegistered / states / registeredLayers / setOpacity /
+     * setSoftVisible / refresh 对框架图层全部原生可用，无需特判。
+     *
+     * 用于系统级开关图层（照片标注、内置网格等），生命周期随地图而非随插件。
+     */
+    @Synchronized
+    fun registerFramework(layerId: String, factory: () -> LibreMapLayer) {
+        val fid = fullId(FRAMEWORK_OWNER, layerId)
+        if (registrations.containsKey(fid)) return
+        register(FRAMEWORK_OWNER, layerId, factory)
+    }
+
     /**
      * 反注册并卸载图层（业务侧"移除/卸载"语义）：
      * 存活则关闭，从注册表与反查表移除，states 除名。
@@ -324,6 +364,7 @@ object MapLayerManager {
         // 3. 附属状态清理
         softHidden.remove(fid)
         opacityOf.remove(fid)
+        pendingFramework.remove(fid)   // ★ 待决状态一并清理
 
         // 4. states 除名（Map 不可变更新，触发 StateFlow 重组）
         _states.value -= fid
@@ -470,6 +511,27 @@ object MapLayerManager {
     // -------------------------------------------------------------------------
 
     /**
+     * ★ 精确开启（区别于 toggle 取反；框架图层/自管状态开关推荐入口）。
+     * 已存活则幂等返回 true；未注册返回 false。
+     * 主 Session 未就绪的框架图层：记账待 [onMainSessionReady] 补开，返回 true。
+     */
+    @Synchronized
+    fun enable(id: String, context: Context): Boolean {
+        val fid = resolveFullId(id) ?: return false
+        if (liveLayers.containsKey(fid)) return true
+        return openLayer(fid, context)
+    }
+
+    /** ★ 精确关闭（幂等；未存活也返回 true）。 */
+    @Synchronized
+    fun disable(id: String, context: Context): Boolean {
+        val fid = resolveFullId(id) ?: return false
+        pendingFramework.remove(fid)   // 撤销可能存在的待决开启
+        closeLayer(fid, context.applicationContext)
+        return true
+    }
+
+    /**
      * 开关切换（UI 点击唯一入口）。
      * [id] 支持 fullId（"pluginId:layerId"）或裸 layerId。
      */
@@ -479,11 +541,64 @@ object MapLayerManager {
             Timber.w("toggle 未找到图层「$id」（尚未扫描绑定？）")
             return false
         }
-        val reg = registrations[fid] ?: return false
         val appCtx = context.applicationContext
         appContextRef = appCtx
 
         // ★ 关闭分支
+        liveLayers[fid]?.let {
+            pendingFramework.remove(fid)   // 撤销可能存在的待决开启
+            closeLayer(fid, appCtx)
+            return true
+        }
+
+        // ★ 开启分支
+        return openLayer(fid, appCtx)
+    }
+
+    /**
+     * ★ 开启分支公共实现（toggle / enable / 待决补齐共用）。
+     * 返回 false = 无法开启（未注册 / 插件未加载）；框架图层主 Session
+     * 未就绪时记账挂起并返回 true（不视为失败）。
+     */
+    @Synchronized
+    private fun openLayer(fid: String, context: Context): Boolean {
+        val reg = registrations[fid] ?: return false
+        val appCtx = context.applicationContext
+        appContextRef = appCtx
+
+        // Session 解析：框架图层 → 主 Session；插件图层 → 插件 Session
+        val session = sessionForOwner(fid.substringBefore(':'))
+        if (session == null) {
+            if (fid.startsWith("$FRAMEWORK_OWNER:")) {
+                // 地图主 Session 未就绪：挂起，就绪后由 onMainSessionReady 补开
+                pendingFramework[fid] = true
+                return true
+            }
+            Toast.makeText(appCtx, "插件未加载，请稍后再试", Toast.LENGTH_SHORT).show()
+            return false
+        }
+        return attachLayer(fid, reg, session, appCtx)
+    }
+
+    /** ★ attach 落点（toggle 开启分支与待决补齐共用）。 */
+    @Synchronized
+    private fun attachLayer(
+        fid: String,
+        reg: Registration,
+        session: MapSession,
+        appCtx: Context,
+    ): Boolean {
+        val layer = reg.factory()
+        liveLayers[fid] = layer
+        update(fid, MapLayerState(active = false, loading = true))
+        Toast.makeText(appCtx, "「${layer.displayName}」加载中…", Toast.LENGTH_SHORT).show()
+        layer.attachInternal(session, appCtx)
+        return true
+    }
+
+    /** ★ 关闭分支公共实现（toggle 关闭 / disable 共用）。 */
+    @Synchronized
+    private fun closeLayer(fid: String, appCtx: Context) {
         liveLayers[fid]?.let { layer ->
             runCatching { layer.detachInternal() }
             liveLayers.remove(fid)
@@ -491,21 +606,55 @@ object MapLayerManager {
             opacityOf.remove(fid)
             update(fid, MapLayerState(active = false, loading = false))
             Toast.makeText(appCtx, "已关闭「${layer.displayName}」", Toast.LENGTH_SHORT).show()
-            return true
         }
+    }
 
-        // ★ 开启分支：Session 由 fullId 的 owner 段解析
-        val session = MapRuntime.pluginSession(fid.substringBefore(':'))
-        if (session == null) {
-            Toast.makeText(appCtx, "插件未加载，请稍后再试", Toast.LENGTH_SHORT).show()
-            return true
+    /**
+     * ★ Session 解析：owner = [FRAMEWORK_OWNER] 时取地图主 Session
+     * （[MapRuntime.mainSession]），其余保持插件 Session 解析。
+     * 这是框架图层"插件未加载"误报的修复点。
+     */
+    private fun sessionForOwner(owner: String): MapSession? =
+        if (owner == FRAMEWORK_OWNER) MapRuntime.mainSession
+        else MapRuntime.pluginSession(owner)
+
+    /**
+     * ★ 地图主 Session 就绪回调（MapRuntime 创建/绑定主 Session 处调用一次）：
+     * 补开挂起的框架图层，不丢开关状态。
+     */
+    @Synchronized
+    internal fun onMainSessionReady(session: MapSession) {
+        val pendingCopy = pendingFramework.toMap()
+        pendingFramework.clear()
+        pendingCopy.forEach { (fid, _) ->
+            val reg = registrations[fid] ?: return@forEach
+            if (!liveLayers.containsKey(fid)) {
+                attachLayer(fid, reg, session, appContextRef ?: return@forEach)
+            }
         }
-        val layer = reg.factory()
-        liveLayers[fid] = layer
-        update(fid, MapLayerState(active = false, loading = true))
-        Toast.makeText(appCtx, "「${layer.displayName}」加载中…", Toast.LENGTH_SHORT).show()
-        layer.attachInternal(session, appCtx)
-        return true
+    }
+
+    /**
+     * ★ 地图重建重挂载（MapRuntime.attach 时回调）：
+     * 主 Session 已在 attach 前重建（懒创建）；存活的框架图层实例仍持有
+     * 旧（已 close）Session 引用，其 onReady 回调是 first() 一次性消费、
+     * 不会在新地图上再触发——这里 detach 旧引用后按新主 Session 重 attach，
+     * 图层经 onAttach → 缓存数据秒开重建（PhotoMarkerLayer 等本地缓存图层
+     * 几乎无感；远程图层重走拉取管道）。
+     * 插件图层的宿主 Session 由插件自行管理，不在此列。
+     */
+    @Synchronized
+    internal fun onMapReattached() {
+        val appCtx = appContextRef ?: return
+        val frameworkPrefix = "$FRAMEWORK_OWNER:"
+        val stale = liveLayers.filterKeys { it.startsWith(frameworkPrefix) }.toMap()
+        stale.forEach { (fid, layer) ->
+            runCatching { layer.detachInternal() }
+            val reg = registrations[fid] ?: return@forEach
+            // 复用既有实例：close() 已标记的实例不可复用，故重走工厂
+            liveLayers.remove(fid)
+            attachLayer(fid, reg, MapRuntime.mainSession, appCtx)
+        }
     }
 
     /** 触发存活图层的刷新（需实现 [RefreshableLayer]）；[id] 同 [toggle]。 */

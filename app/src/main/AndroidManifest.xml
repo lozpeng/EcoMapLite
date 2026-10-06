@@ -29,6 +29,11 @@
 
     <!-- 相机 / 麦克风（轨迹媒体采集） -->
     <uses-permission android:name="android.permission.CAMERA" />
+
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <!-- ★ 照片标注必需：未授予时系统脱敏媒体 GPS Exif，扫描结果为空 -->
+    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" />
     <!--是否允许备份数据 android:allowBackup -->
     <application
         android:name=".HostApp"

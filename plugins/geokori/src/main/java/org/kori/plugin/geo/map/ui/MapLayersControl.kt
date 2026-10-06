@@ -1,5 +1,11 @@
 package org.kori.plugin.geo.map.ui
 
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -22,8 +28,10 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
@@ -56,6 +64,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import org.cwcc.open.geokori.map.MapLayerManager
+import org.cwcc.open.geokori.map.PhotoMarkerLayer
+import org.cwcc.open.geokori.map.PhotoMarkerLayers
 import org.kori.plugin.geo.map.layer.LayerFilter
 
 // =============================================================================================
@@ -109,6 +119,12 @@ data class LayerGroup(
  *
  * 支持图层群组：按 id 首段聚合，群组标题行提供三态复选框批量开关整组。
  *
+ * ★ 新增：照片标注开关（photoMarkersEnabled / onPhotoMarkersToggle）。
+ *   开关状态由 [PhotoMarkerLayers] 持久化（SharedPreferences），跨启动自动恢复；
+ *   传入 null 时组件自动读取持久化状态，回调默认接 [PhotoMarkerLayers.setEnabled]，
+ *   调用方零接线。点击后 IO 线程扫描相册 Exif 建点图层，运行期走 ContentObserver
+ *   增量更新，不反复全量扫描。
+ *
  * @param groupKeyExtractor 群组 key 提取器；默认 [LayerGroupNaming.groupKeyOf]
  * @param groupDisplayName  群组显示名映射；默认 [LayerGroupNaming.displayName]（中文）
  */
@@ -128,6 +144,21 @@ fun MapLayersControl(
     // ---------- 叠加层 ----------
     overlays: List<OverlayToggle> = emptyList(),
     onOverlayToggle: (String, Boolean) -> Unit = { _, _ -> },
+
+    // ---------- 照片标注（系统相册 Exif 点图层） ----------
+    /**
+     * 开关当前状态。null（默认）= 组件派生自 MapLayerManager.states 的
+     * active 标志（与"业务图层"区、外部 enable/disable 双向同步）；
+     * 宿主自行托管状态（如服务端同步开关）时传具体值。
+     */
+    photoMarkersEnabled: Boolean? = null,
+    /**
+     * 开关回调。null（默认）= 内置完整流程：
+     * 关 → 直接停用；开 → 先查 [PhotoMarkerLayers.hasAllPermissions]，
+     * 缺权限弹系统申请，授权后自动开启并重扫（refresh），
+     * 拒绝则 Toast 引导。非 null = 完全接管（自行处理权限与启停）。
+     */
+    onPhotoMarkersToggle: ((Boolean) -> Unit)? = null,
 
     // ---------- 地图图层 ----------
     layers: List<LayerEntry> = emptyList(),
@@ -158,6 +189,63 @@ fun MapLayersControl(
     var layersExpanded by remember { mutableStateOf(false) }
     val groupExpandedStates = remember { mutableStateMapOf<String, Boolean>() }
 
+    // ★ 照片标注开关状态：直接派生自 states 流的 active 标志（MapLayerManager
+    //   enable/disable/attach/detach 都会改写 states → collectAsState 自动重组），
+    //   与控制面板"业务图层"区、外部 enable/disable 调用天然双向同步，
+    //   不再读非状态源的 registeredLayers()、也不再反向写 SharedPreferences。
+    val managerStates by MapLayerManager.states.collectAsState()
+    val managerRevision by MapLayerManager.revision.collectAsState()
+    val photoEnabled = photoMarkersEnabled
+        ?: (managerStates[MapLayerManager.fullId(
+            MapLayerManager.FRAMEWORK_OWNER, PhotoMarkerLayer.LAYER_ID)]?.active == true)
+
+    // ★ 照片标注权限引导窗口状态：
+    //   denied = 用户已拒绝过一次（含"不再询问"）→ 弹窗改显"去设置"入口
+    var showPhotoPermissionDialog by remember { mutableStateOf(false) }
+    var photoPermissionDenied by remember { mutableStateOf(false) }
+
+    // ★ 权限申请入口：授权成功后自动开启图层并强制重扫（此前权限不足时扫描为空）；
+    //   拒绝 → 弹引导窗口（带"去设置"入口，处理永久拒绝场景）
+    val photoPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        if (grants.isNotEmpty() && grants.values.all { it }) {
+            showPhotoPermissionDialog = false
+            photoPermissionDenied = false
+            PhotoMarkerLayers.setEnabled(appContext, true)
+            MapLayerManager.refresh(PhotoMarkerLayer.LAYER_ID)
+        } else {
+            photoPermissionDenied = true
+            showPhotoPermissionDialog = true
+        }
+    }
+
+    // ★ 授权引导窗口：说明用途 → 确认后弹系统权限申请；被拒绝后提供"去设置"
+    if (showPhotoPermissionDialog) {
+        PhotoMarkerPermissionDialog(
+            denied = photoPermissionDenied,
+            onDismiss = { showPhotoPermissionDialog = false },
+            onConfirm = {
+                // 二次确认时若已授予（用户从设置返回后重试）直接开启
+                if (PhotoMarkerLayers.hasAllPermissions(appContext)) {
+                    showPhotoPermissionDialog = false
+                    PhotoMarkerLayers.setEnabled(appContext, true)
+                    MapLayerManager.refresh(PhotoMarkerLayer.LAYER_ID)
+                } else {
+                    photoPermissionLauncher.launch(PhotoMarkerLayers.REQUIRED_PERMISSIONS)
+                }
+            },
+            onOpenSettings = {
+                showPhotoPermissionDialog = false
+                val intent = Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.fromParts("package", appContext.packageName, null),
+                ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                runCatching { appContext.startActivity(intent) }
+            },
+        )
+    }
+
     val filteredLayers = remember(layers, layerFilter) {
         layerFilter.apply(layers)
     }
@@ -167,7 +255,7 @@ fun MapLayersControl(
 
     val anyOverlayOn = overlays.any { it.enabled }
     val anyLayerHidden = filteredLayers.any { !it.visible }
-    val active = anyOverlayOn || anyLayerHidden
+    val active = anyOverlayOn || anyLayerHidden || photoEnabled
 
     Box(modifier = modifier) {
         Box(
@@ -194,12 +282,6 @@ fun MapLayersControl(
                     contentDescription = "图层设置",
                 )
             }
-
-            // ★ 订阅业务图层状态 + 修订计数：
-            //    states 覆盖 active/loading；软显隐/透明度变化内容不在 states 中
-            //    （StateFlow equals 去重），靠 revision 驱动重组
-            val managerStates by MapLayerManager.states.collectAsState()
-            val managerRevision by MapLayerManager.revision.collectAsState()
 
             DropdownMenu(
                 expanded = menuExpanded,
@@ -231,6 +313,33 @@ fun MapLayersControl(
                     }
                 }
 
+                // ==================== 照片标注（系统相册 Exif） ====================
+                // ★ 开关即启停：开 → 权限齐全直接加载（IO 扫描建点）；缺失先弹
+                //   授权引导窗口（说明用途）→ 确认后系统申请；关 → 卸载。
+                //   开关状态与"业务图层"区同源同步。
+                if (baseMapOptions.isNotEmpty() || overlays.isNotEmpty()) SectionDivider()
+                MenuSectionHeader("照片标注")
+                LayerSwitchItem(
+                    label = "照片标注（相册定位点）",
+                    checked = photoEnabled,
+                    onCheckedChange = { enabled ->
+                        val handler = onPhotoMarkersToggle
+                        if (handler != null) {
+                            handler(enabled)
+                        } else when {
+                            !enabled ->
+                                PhotoMarkerLayers.setEnabled(appContext, false)
+                            PhotoMarkerLayers.hasAllPermissions(appContext) ->
+                                PhotoMarkerLayers.setEnabled(appContext, true)
+                            else -> {
+                                // 首次引导（denied=false → 显示"去授权"）
+                                photoPermissionDenied = false
+                                showPhotoPermissionDialog = true
+                            }
+                        }
+                    },
+                )
+
                 // ==================== 业务图层（MapLayerManager） ====================
                 if (managerLayersEnabled) {
                     // 只展示已开启（存活）的图层；未开启的由快捷按钮/业务入口负责开启，
@@ -258,8 +367,7 @@ fun MapLayersControl(
                                     }
                                 },
                                 onOpacity = { alpha ->
-                                    val handler = onManagerLayerOpacity
-                                    if (handler != null) handler(entry.fullId, alpha)
+                                    if (onManagerLayerOpacity != null) onManagerLayerOpacity(entry.fullId, alpha)
                                     else MapLayerManager.setOpacity(entry.fullId, alpha)
                                 },
                             )
@@ -659,6 +767,68 @@ private fun groupLayers(
             entries = list,
         )
     }
+}
+
+// =============================================================================================
+// 照片标注授权引导窗口
+// =============================================================================================
+
+/**
+ * 照片标注权限引导窗口。
+ *
+ * 两态：
+ *  · [denied] = false：首次引导 —— 说明两项权限用途，确认后弹系统权限申请；
+ *  · [denied] = true：已被拒绝（含"不再询问"）—— 主按钮变为"去设置"，
+ *    跳应用详情页由用户手动授予（系统申请已不会再弹窗）。
+ *
+ * @param denied       是否已拒绝过一次（决定主按钮文案/行为）
+ * @param onDismiss    关闭（取消/返回）
+ * @param onConfirm    首次态：发起系统权限申请
+ * @param onOpenSettings 拒绝态：跳应用设置页
+ */
+@Composable
+private fun PhotoMarkerPermissionDialog(
+    denied: Boolean,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+    onOpenSettings: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = if (denied) "需要手动开启权限" else "开启照片标注",
+                style = MaterialTheme.typography.titleMedium,
+            )
+        },
+        text = {
+            Column {
+                Text(
+                    text = "照片标注需要在地图上显示相册中带有定位信息的照片：",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "· 相册读取：扫描照片文件\n" +
+                            "· 媒体位置：读取照片内置 GPS 坐标" +
+                            if (denied) "\n\n此前权限申请被拒绝。系统不再弹窗，请到应用设置中手动授予「照片和视频」与「地理位置」权限。"
+                            else "",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = if (denied) onOpenSettings else onConfirm) {
+                Text(if (denied) "去设置" else "去授权")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消")
+            }
+        },
+    )
 }
 
 // =============================================================================================
