@@ -9,6 +9,7 @@ import androidx.compose.material.icons.filled.LocalPolice
 import androidx.compose.ui.graphics.Color
 import org.cwcc.open.geokori.ui.material3.center.model.QuickActionSpec
 import androidx.compose.ui.graphics.vector.ImageVector
+import org.kori.plugin.wildlife.layers.ElephantMonitorLayer
 import org.kori.plugin.wildlife.layers.IllegalEventsHeatLayer
 
 /**
@@ -64,10 +65,10 @@ fun defaultBizQuickActions(): List<WfBizAction> = listOf(
     ),
     WfBizAction(
         label = "象实时监测",
-        type = WfActionType.BOTTOM_SHEET,
+        type = WfActionType.LAYER,
         containerColor = Color(0xFFFFF3E0),
         contentColor = Color(0xFFEF6C00),
-        payload = "elephant-monitoring",
+        id = ElephantMonitorLayer.LAYER_ID
     ),
     WfBizAction(
         label = "栖息地分布",

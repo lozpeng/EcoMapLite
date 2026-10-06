@@ -233,8 +233,10 @@ fun MapLayersControl(
 
                 // ==================== 业务图层（MapLayerManager） ====================
                 if (managerLayersEnabled) {
+                    // 只展示已开启（存活）的图层；未开启的由快捷按钮/业务入口负责开启，
+                    // detach 时 revision 自增，条目自动从菜单消失
                     val managerLayers = remember(managerStates, managerRevision) {
-                        MapLayerManager.registeredLayers()
+                        MapLayerManager.registeredLayers().filter { it.active }
                     }
                     if (managerLayers.isNotEmpty()) {
                         if (baseMapOptions.isNotEmpty() || overlays.isNotEmpty()) SectionDivider()
@@ -547,6 +549,9 @@ private fun LayerVisibilityItem(
     }
 }
 
+/**
+ * 业务图层条目（仅存活图层进入此 Composable，外层已按 active 过滤）。
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ManagerLayerItem(
@@ -572,75 +577,59 @@ private fun ManagerLayerItem(
                 .clickable { onToggle(!entry.visible) },
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    text = label,
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    color = if (entry.active) {
-                        MaterialTheme.colorScheme.onSurface
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                )
-                if (!entry.active) {
-                    Text(
-                        text = "未开启",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
+            Text(
+                text = label,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
             Switch(
                 checked = entry.visible,
                 onCheckedChange = onToggle,
-                enabled = entry.active,
                 modifier = Modifier.height(24.dp),
             )
         }
 
-        // 透明度滑杆（仅存活图层可调）
-        if (entry.active) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Slider(
-                    value = displayAlpha,
-                    onValueChange = {
-                        dragging = true
-                        dragValue = it
-                        onOpacity(it)
-                    },
-                    onValueChangeFinished = { dragging = false },
-                    modifier = Modifier.weight(1f),
-                    enabled = entry.visible,
-                    thumb = {
-                        // 实心圆圈 thumb
-                        Box(
-                            Modifier
-                                .size(16.dp)
-                                .background(
-                                    if (entry.visible) {
-                                        MaterialTheme.colorScheme.primary
-                                    } else {
-                                        MaterialTheme.colorScheme.outline
-                                    },
-                                    CircleShape,
-                                ),
-                        )
-                    },
-                )
-                Text(
-                    text = "${(displayAlpha * 100).toInt()}%",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 8.dp),
-                )
-            }
+        // 透明度滑杆
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Slider(
+                value = displayAlpha,
+                onValueChange = {
+                    dragging = true
+                    dragValue = it
+                    onOpacity(it)
+                },
+                onValueChangeFinished = { dragging = false },
+                modifier = Modifier.weight(1f),
+                enabled = entry.visible,
+                thumb = {
+                    // 实心圆圈 thumb
+                    Box(
+                        Modifier
+                            .size(16.dp)
+                            .background(
+                                if (entry.visible) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.outline
+                                },
+                                CircleShape,
+                            ),
+                    )
+                },
+            )
+            Text(
+                text = "${(displayAlpha * 100).toInt()}%",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 8.dp),
+            )
         }
     }
 }

@@ -1,7 +1,5 @@
 package org.kori.plugin.wildlife.layers
 
-import android.graphics.Color
-import android.util.Log
 import android.view.ViewGroup
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
@@ -19,6 +17,7 @@ import org.maplibre.android.style.sources.GeoJsonOptions
 import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.geojson.FeatureCollection
 import timber.log.Timber
+import androidx.core.graphics.toColorInt
 
 /**
  * 盗猎事件热力图图层。
@@ -201,8 +200,8 @@ class IllegalEventsHeatLayer : BaseBizeLibreLayer() {
                         Expression.stop(16f, 8f),
                     ),
                 ),
-                PropertyFactory.circleColor(Expression.color(Color.parseColor("#FF5722"))),
-                PropertyFactory.circleStrokeColor(Expression.color(Color.parseColor("#FFFFFF"))),
+                PropertyFactory.circleColor(Expression.color("#FF5722".toColorInt())),
+                PropertyFactory.circleStrokeColor(Expression.color("#FFFFFF".toColorInt())),
                 PropertyFactory.circleStrokeWidth(2f),
                 PropertyFactory.circleOpacity(0.9f),
             )
@@ -221,8 +220,8 @@ class IllegalEventsHeatLayer : BaseBizeLibreLayer() {
                         Expression.stop(16f, 16f),
                     ),
                 ),
-                PropertyFactory.textColor(Expression.color(Color.parseColor("#333333"))),
-                PropertyFactory.textHaloColor(Expression.color(Color.parseColor("#FFFFFF"))),
+                PropertyFactory.textColor(Expression.color("#333333".toColorInt())),
+                PropertyFactory.textHaloColor(Expression.color("#FFFFFF".toColorInt())),
                 PropertyFactory.textHaloWidth(1f),
                 PropertyFactory.textOffset(arrayOf(0f, 1.5f)),
                 PropertyFactory.textAnchor(Property.TEXT_ANCHOR_TOP),
@@ -318,7 +317,7 @@ class IllegalEventsHeatLayer : BaseBizeLibreLayer() {
     private fun mountSheetHost() {
         if (sheetHostView != null) return
         val parent = MapRuntime.currentMapView ?: run {
-            android.util.Log.w(TAG, "mountSheetHost: MapRuntime.currentMapView 为空（地图插件 attach 时未传 mapView?）")
+            Timber.w("mountSheetHost: MapRuntime.currentMapView 为空（地图插件 attach 时未传 mapView?）")
             return
         }
         val view = ComposeView(parent.context).apply {

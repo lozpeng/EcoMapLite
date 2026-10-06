@@ -439,12 +439,6 @@ private fun handleQuickActionClick(
                 }
             }
             WfActionType.BOTTOM_SHEET -> when (action.payload) {
-                "elephant-monitoring" -> PluginModuleUtils.showBottomSheet(
-                    content = { ElephantMonitoringContent() },
-                    title = action.label,
-                    closeable = true,
-                    isNormalActivity = true,
-                )
                 "habitat" -> PluginModuleUtils.showBottomSheet(
                     content = { ElephantMonitoringContent() },
                     title = action.label,
