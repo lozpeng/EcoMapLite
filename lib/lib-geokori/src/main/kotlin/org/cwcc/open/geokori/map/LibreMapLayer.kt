@@ -303,6 +303,32 @@ object MapLayerManager {
         update(fid, _states.value[fid] ?: MapLayerState())
         pending.remove(layerId)
     }
+    /**
+     * 反注册并卸载图层（业务侧"移除/卸载"语义）：
+     * 存活则关闭，从注册表与反查表移除，states 除名。
+     * 移除后同 layerId 可重新 register（如再次导入同名文件）。
+     */
+    @Synchronized
+    fun unregister(id: String): Boolean {
+        val fid = resolveFullId(id) ?: return false
+        // 1. 存活实例先关闭
+        liveLayers[fid]?.let { runCatching { it.detachInternal() } }
+        liveLayers.remove(fid)
+
+        // 2. 注册表与反查表除名（反查仅当仍指向本 fullId 时清除，不误删跨插件映射）
+        registrations.remove(fid)
+        val layerId = fid.substringAfter(':')
+        if (boundLayerIds[layerId] == fid) boundLayerIds.remove(layerId)
+
+        // 3. 附属状态清理
+        softHidden.remove(fid)
+        opacityOf.remove(fid)
+
+        // 4. states 除名（Map 不可变更新，触发 StateFlow 重组）
+        _states.value -= fid
+        bumpRevision()
+        return true
+    }
 
     /**
      * 插件 Session 注册回调（MapRuntime.openPluginSession 调用，业务侧勿直接用）：

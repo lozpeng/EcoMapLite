@@ -63,6 +63,9 @@ dependencies {
     compileOnly(project(":core"))   // 新增
     implementation(project(":ui:ui-geokori"))
 
+    compileOnly(libs.geopackage.core)
+    compileOnly(libs.geopackage.android)
+
     api(libs.coil.kt)
     api(libs.coil.okhttp)
     api(libs.coil.kt.compose)

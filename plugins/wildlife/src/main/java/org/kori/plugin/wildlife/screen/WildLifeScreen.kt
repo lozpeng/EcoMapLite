@@ -7,22 +7,35 @@ import android.widget.Toast
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.ExperimentalMaterialApi
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -30,7 +43,6 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.RadioButtonChecked
-import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.pullrefresh.pullRefresh
 import androidx.compose.material.pullrefresh.rememberPullRefreshState
 import androidx.compose.material3.AlertDialog
@@ -42,6 +54,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -61,6 +74,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
@@ -68,7 +82,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.cwcc.open.geokori.framework.PluginModuleUtils
+import org.cwcc.open.geokori.map.GeoPackageLayers
+import org.cwcc.open.geokori.map.GpkgImportState
 import org.cwcc.open.geokori.map.MapLayerManager
+import org.cwcc.open.geokori.map.rememberGpkgImport
 import org.cwcc.open.geokori.ui.material3.center.model.CollapsedQuickActions
 import org.cwcc.open.geokori.ui.material3.center.model.ExpandedQuickActions
 import org.cwcc.open.geokori.ui.material3.center.model.QuickActionSpec
@@ -78,14 +95,17 @@ import org.kori.plugin.wildlife.actions.WfActionType
 import org.kori.plugin.wildlife.actions.WfBizAction
 import org.kori.plugin.wildlife.actions.defaultBizQuickActions
 import org.kori.plugin.wildlife.actions.defaultWildLifeActions
+import java.io.File
+
+
 
 /**
- * 野生动植物监管屏（v3 · 类型化 Action）。
+ * 野生动植物监管屏（v4 · GeoPackage 导入）。
  *
- *  · 业务按钮全部使用 [WfBizAction]（QuickActionSpec 插件实现），
- *    分发按 action.type 类型路由，不再匹配中文字符串 label
- *  · 图层类（LAYER）→ MapLayerManager.toggle(action.id)，Session 自动注入
- *  · checked/loading → collect MapLayerManager.states 合并进列表（copy 替换重组）
+ *  · SpeedDial"打开" → 文件选择器 → 硬链接进 filesDir + 注册 + 立即加载
+ *  · 打开信息持久化到 filesDir/gpkg_manifest.json（含属主插件）
+ *  · bizActions 动态追加本插件导入的 gpkg 按钮（懒注册拦截，重启后可再加载）
+ *  · 其余 v3 行为不变：类型化 Action 分发、checked/loading 状态合并
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterialApi::class)
 @Composable
@@ -104,7 +124,12 @@ fun WildLifeScreen(
 
     var isQuickActionsExpanded by remember { mutableStateOf(expand) }
     var isSpeedDialExpanded by remember { mutableStateOf(false) }
-    var showFloatingDialog by remember { mutableStateOf(false) }
+
+    // ★ gpkg 按钮编辑模式（长按进入：抖动 + 红底减号角标）
+    var gpkgEditMode by remember { mutableStateOf(false) }
+
+    // ★ 业务动作分发器：gpkg 导入状态 + DIALOG 弹窗全部内化，调用方只管 onClick
+    val dispatcher = rememberActionDispatcher()
 
     val pullRefreshState = rememberPullRefreshState(
         refreshing = state.isLoading,
@@ -112,15 +137,26 @@ fun WildLifeScreen(
     )
 
     // ★ 框架级图层管理器状态 → 合并进 WfBizAction
-    // 注意：states 的 key 是 fullId（pluginId:layerId），action.id 可能是裸 layerId，
-    // 统一经 MapLayerManager.layerStateOf(id) 解析（支持两种 id，未绑定返回 null）
     val layerStates by MapLayerManager.states.collectAsState()
 
+    // ★ 静态业务按钮（gpkg 动态按钮改由 EditableQuickActions 渲染，支持长按编辑）
     val mergedBizActions = remember(bizActions, layerStates) {
         bizActions.map { action ->
             val st = MapLayerManager.layerStateOf(action.id)
             if (st == null) action
             else action.copy(checked = st.active, loading = st.loading)
+        }
+    }
+
+    // gpkg 动态按钮（编辑模式可移除）
+    val gpkgActions = remember(dispatcher.gpkg.imported) {
+        dispatcher.gpkg.imported.map {
+            WfBizAction(
+                label = it.label,
+                type = WfActionType.GPKG,
+                payload = it.fileName,
+                id = it.layerId,
+            )
         }
     }
 
@@ -143,7 +179,7 @@ fun WildLifeScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 item {
-                        Spacer(modifier = Modifier.width(6.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
                 }
                 item {
                     AnimatedContent(
@@ -153,16 +189,12 @@ fun WildLifeScreen(
                         if (expanded) {
                             ExpandedQuickActions(
                                 actions = quickActions,
-                                onActionClick = { action ->
-                                    handleQuickActionClick(action, context)
-                                },
+                                onActionClick = dispatcher.onClick,
                             )
                         } else {
                             CollapsedQuickActions(
                                 actions = quickActions.take(4),
-                                onActionClick = { action ->
-                                    handleQuickActionClick(action, context)
-                                },
+                                onActionClick = dispatcher.onClick,
                             )
                         }
                     }
@@ -177,7 +209,7 @@ fun WildLifeScreen(
                     ) {
                         Text(
                             text = "快捷操作",
-                            fontSize = 18.sp ,
+                            fontSize = 18.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color(0xFF202124)
                         )
@@ -188,18 +220,31 @@ fun WildLifeScreen(
                         label = "wildlife_biz_actions"
                     ) { expanded ->
                         if (expanded) {
-                            ExpandedQuickActions(
-                                actions = mergedBizActions,
-                                onActionClick = { action ->
-                                    handleQuickActionClick(action, context)
-                                },
-                            )
+                            Column {
+                                ExpandedQuickActions(
+                                    actions = mergedBizActions,
+                                    onActionClick = dispatcher.onClick,
+                                )
+                                // ★ gpkg 动态按钮：可编辑（长按抖动 + 减号角标移除）
+                                if (gpkgActions.isNotEmpty()) {
+                                    EditableQuickActions(
+                                        actions = gpkgActions,
+                                        editMode = gpkgEditMode,
+                                        onEditModeChange = { gpkgEditMode = it },
+                                        onClick = dispatcher.onClick,
+                                        onRemove = { dispatcher.gpkg.remove(it.payload) },
+                                    )
+                                }
+                                if (gpkgEditMode) {
+                                    TextButton(onClick = { gpkgEditMode = false }) {
+                                        Text("完成")
+                                    }
+                                }
+                            }
                         } else {
                             CollapsedQuickActions(
                                 actions = mergedBizActions.take(4),
-                                onActionClick = { action ->
-                                    handleQuickActionClick(action, context)
-                                },
+                                onActionClick = dispatcher.onClick,
                             )
                         }
                     }
@@ -211,9 +256,10 @@ fun WildLifeScreen(
                 onExpandedChange = { isSpeedDialExpanded = it },
                 onActionClick = { action ->
                     when (action) {
-                        "open_folder" -> Toast.makeText(context, "打开文件夹", Toast.LENGTH_SHORT).show()
+                        // ★ 打开：唤起 gpkg 文件选择器（原 Toast 替换）
+                        "open_folder" -> dispatcher.gpkg.launchPicker()
                         "add_record" -> Toast.makeText(context, "添加记录", Toast.LENGTH_SHORT).show()
-                        "show_info" -> showFloatingDialog = true
+                        "show_info" -> dispatcher.showDialog("info")
                         "sync_data" -> Toast.makeText(context, "同步数据", Toast.LENGTH_SHORT).show()
                     }
                     isSpeedDialExpanded = false
@@ -223,23 +269,6 @@ fun WildLifeScreen(
         }
     }
 
-    if (showFloatingDialog) {
-        AlertDialog(
-            onDismissRequest = { showFloatingDialog = false },
-            title = { Text("提示信息") },
-            text = { Text("这是野生动物监管插件的浮动对话框。\n您可以在这里显示重要信息或操作提示。") },
-            confirmButton = {
-                TextButton(onClick = { showFloatingDialog = false }) {
-                    Text("确定")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showFloatingDialog = false }) {
-                    Text("取消")
-                }
-            }
-        )
-    }
 }
 
 @Composable
@@ -409,41 +438,213 @@ fun SpeedDialActionButton(
 }
 
 /**
- * ★ 类型化分发（v3）：
- *  · WfBizAction 按 [WfBizAction.type] 路由 —— 不再匹配中文字符串
- *  · 非 WfBizAction 的 QuickActionSpec（如首页 quickActions）退回 label 分支兼容处理
+ * 业务动作分发器：持有 gpkg 导入状态，DIALOG 弹窗 UI 由本 Composable 直接渲染；
+ * 屏幕侧任何按钮统一 `dispatcher.onClick(action)`，类型路由全部内化。
  */
-private fun handleQuickActionClick(
-    action: QuickActionSpec,
-    context: android.content.Context,
-) {
-    // 1. wildlife 业务动作：类型路由
-    if (action is WfBizAction) {
-        when (action.type) {
-            WfActionType.LAYER -> {
-                // 已注册 → 框架管理器接管（自动注入 Session、转圈/高亮/Toast）
-                if (action.id.isNotEmpty() && MapLayerManager.isRegistered(action.id)) {
-                    MapLayerManager.toggle(action.id, context)
-                } else {
-                    Toast.makeText(context, "图层未注册:${action.id}", Toast.LENGTH_SHORT).show()
-                }
-            }
-            WfActionType.BOTTOM_SHEET -> when (action.payload) {
-                "habitat" -> PluginModuleUtils.showBottomSheet(
-                    content = { ElephantMonitoringContent() },
-                    title = action.label,
-                    isNormalActivity = false,
-                )
-                else -> Toast.makeText(context, action.label, Toast.LENGTH_SHORT).show()
-            }
-            WfActionType.TOAST ->
-                Toast.makeText(context, action.label, Toast.LENGTH_SHORT).show()
-        }
-        return
+class ActionDispatcher(
+    /** gpkg 导入状态（按钮列表 / 选择器 / 打开） */
+    val gpkg: GpkgImportState,
+    /** 统一动作入口 */
+    val onClick: (QuickActionSpec) -> Unit,
+    /** 直接弹 DIALOG 对话框（payload 决定内容；SpeedDial 等非 action 入口用） */
+    val showDialog: (String) -> Unit,
+)
+
+/**
+ * 记住分发器：一行接入，替代散落的 dialog 状态 + gpkg 状态 + 分发函数。
+ *
+ * 类型路由：
+ *  · LAYER  → MapLayerManager.toggle（已注册前置校验）
+ *  · GPKG   → 本插件导入的 gpkg 按钮：懒注册（补登记）后 toggle
+ *  · DIALOG → AlertDialog（payload 决定内容，新内容加 dialogTitle/dialogContent 分支）
+ *  · BOTTOM_SHEET / TOAST 照旧
+ *  · 非 WfBizAction 的 QuickActionSpec 退回 label Toast 兼容
+ */
+@Composable
+private fun rememberActionDispatcher(): ActionDispatcher {
+    val context = LocalContext.current
+    val gpkg = rememberGpkgImport()
+    val dialogPayload = remember { mutableStateOf<String?>(null) }
+
+    // DIALOG 的 UI 由分发器自己渲染（不污染屏幕层状态）
+    dialogPayload.value?.let { payload ->
+        AlertDialog(
+            onDismissRequest = { dialogPayload.value = null },
+            title = { Text(dialogTitle(payload)) },
+            text = { Text(dialogContent(payload)) },
+            confirmButton = {
+                TextButton(onClick = { dialogPayload.value = null }) { Text("确定") }
+            },
+            dismissButton = {
+                TextButton(onClick = { dialogPayload.value = null }) { Text("取消") }
+            },
+        )
     }
 
-    // 2. 非业务 QuickActionSpec 兼容路径
-    Toast.makeText(context, "点击: ${action.label}", Toast.LENGTH_SHORT).show()
+    val onClick = remember(gpkg) {
+        { action: QuickActionSpec ->
+            if (action is WfBizAction) {
+                when (action.type) {
+                    WfActionType.LAYER -> {
+                        if (action.id.isNotEmpty() && MapLayerManager.isRegistered(action.id)) {
+                            MapLayerManager.toggle(action.id, context)
+                        } else {
+                            Toast.makeText(context, "图层未注册:${action.id}", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    WfActionType.GPKG -> {
+                        val id = action.id.ifBlank {
+                            action.payload.takeIf { it.isNotBlank() }
+                                ?.let { GeoPackageLayers.idOf(File(context.filesDir, it)) }
+                                .orEmpty()
+                        }
+                        when {
+                            id.isEmpty() ->
+                                Toast.makeText(context, "gpkg 按钮缺少 id/payload", Toast.LENGTH_SHORT).show()
+                            !MapLayerManager.isRegistered(id) ->
+                                gpkg.open(action.payload)   // 重启后首次点击：补注册再 toggle
+                            else -> MapLayerManager.toggle(id, context)
+                        }
+                    }
+                    WfActionType.DIALOG ->
+                        dialogPayload.value = action.payload.ifBlank { "info" }
+                    WfActionType.BOTTOM_SHEET -> when (action.payload) {
+                        "habitat" -> PluginModuleUtils.showBottomSheet(
+                            content = { ElephantMonitoringContent() },
+                            title = action.label,
+                            isNormalActivity = false,
+                        )
+                        else -> Toast.makeText(context, action.label, Toast.LENGTH_SHORT).show()
+                    }
+                    WfActionType.TOAST ->
+                        Toast.makeText(context, action.label, Toast.LENGTH_SHORT).show()
+                }
+            } else {
+                Toast.makeText(context, "点击: ${action.label}", Toast.LENGTH_SHORT).show()
+            }
+            Unit   // ← 各分支返回值不统一（toggle→Boolean、makeText→Toast），强制 lambda 为 Unit
+        }
+    }
+
+    return ActionDispatcher(
+        gpkg = gpkg,
+        onClick = onClick,
+        showDialog = { payload -> dialogPayload.value = payload },
+    )
+}
+
+// =================================================================================================
+// 可编辑快捷按钮（iOS 卸载式：长按抖动 + 红底减号角标）
+// =================================================================================================
+
+/**
+ * 可编辑业务按钮网格。
+ *
+ * @param removable 扩展点：哪些 action 可移除（默认仅 GPKG；后续类型加进谓词即可参与编辑）
+ */
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
+@Composable
+private fun EditableQuickActions(
+    actions: List<WfBizAction>,
+    editMode: Boolean,
+    onEditModeChange: (Boolean) -> Unit,
+    onClick: (QuickActionSpec) -> Unit,
+    onRemove: (WfBizAction) -> Unit,
+    removable: (WfBizAction) -> Boolean = { it.type == WfActionType.GPKG },
+) {
+    // iOS 式抖动：±2° 往复 + 轻微横移
+    val shake = rememberInfiniteTransition(label = "editShake")
+    val angle by shake.animateFloat(
+        initialValue = -2f,
+        targetValue = 2f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(120, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "angle",
+    )
+
+    FlowRow(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        actions.forEach { action ->
+            val editable = removable(action)
+            Box {
+                Surface(
+                    color = action.containerColor,
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .graphicsLayer {
+                            if (editMode && editable) {
+                                rotationZ = angle
+                                translationX = angle * 0.6f
+                            }
+                        }
+                        .combinedClickable(
+                            onClick = {
+                                if (editMode) onEditModeChange(false)  // 编辑态点空白处退出
+                                else onClick(action)
+                            },
+                            onLongClick = { if (editable) onEditModeChange(true) },
+                        ),
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        action.icon?.let {
+                            Icon(
+                                imageVector = it,
+                                contentDescription = null,
+                                tint = action.contentColor,
+                                modifier = Modifier.size(22.dp),
+                            )
+                        }
+                        Text(
+                            text = action.label,
+                            color = action.contentColor,
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                }
+
+                // 红底减号角标（编辑态）
+                if (editMode && editable) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .offset(6.dp, (-6).dp)
+                            .size(20.dp)
+                            .background(Color(0xFFF44336), CircleShape)
+                            .clickable { onRemove(action) },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            text = "−",
+                            color = Color.White,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun dialogTitle(payload: String): String = when (payload) {
+    "info" -> "提示信息"
+    "about" -> "关于"
+    else -> "提示"
+}
+
+private fun dialogContent(payload: String): String = when (payload) {
+    "info" -> "这是野生动物监管插件的浮动对话框。\n您可以在这里显示重要信息或操作提示。"
+    "about" -> "野生动植物监管插件 v1.0"
+    else -> payload
 }
 
 @Composable
@@ -459,8 +660,7 @@ fun ElephantMonitoringContent() {
                 containerColor = MaterialTheme.colorScheme.primaryContainer
             )
         ) {
-            Column(  modifier = Modifier.padding(16.dp)  )
-            {
+            Column(modifier = Modifier.padding(16.dp)) {
                 Text(
                     text = "当前状态",
                     style = MaterialTheme.typography.titleMedium
@@ -496,7 +696,6 @@ fun ElephantMonitoringContent() {
         }
     }
 }
-
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this

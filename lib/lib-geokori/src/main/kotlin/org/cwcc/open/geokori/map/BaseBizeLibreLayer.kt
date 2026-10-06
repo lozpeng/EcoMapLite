@@ -83,6 +83,15 @@ abstract class BaseBizeLibreLayer : LibreMapLayer(), RefreshableLayer, Visibilit
     /** 本地缓存：元信息文件名（条数 + 时间戳） */
     protected abstract val cacheMetaFile: String
 
+    /**
+     * 是否写本地缓存（默认 true）。
+     * 本地静态数据源（gpkg 文件、离线包）可覆盖为 false，
+     * 避免"源文件 + 缓存文件"双份存储占用。
+     * 注意：此开关只控制写；读侧不受影响——
+     * 适合"随包预置缓存、运行期不更新"的场景。
+     */
+    protected open val enableLocalCache: Boolean = true
+
     /** 本地缓存有效期，默认 1 周 */
     protected open val cacheTtlMs: Long = 7L * 24 * 60 * 60 * 1000
 
@@ -201,11 +210,11 @@ abstract class BaseBizeLibreLayer : LibreMapLayer(), RefreshableLayer, Visibilit
             try {
                 val json = fetchRemoteGeoJson()
                 val collection = FeatureCollection.fromJson(json)
-                writeLocalCache(ctx, json, collection.features()?.size ?: 0)
+                if (enableLocalCache) {                      // ← 新增开关
+                    writeLocalCache(ctx, json, collection.features()?.size ?: 0)
+                }
                 deliver(ctx, collection)
             } catch (inner: Exception) {
-                // 全量失败：降级使用本地缓存（即使已过期），保证地图可用；
-                // 本地也没有则抛给 launchLoad 统一 notifyFailed()
                 val stale = readLocalCache(ctx, ignoreTtl = true) ?: throw inner
                 deliver(ctx, FeatureCollection.fromJson(stale.geojson))
             }

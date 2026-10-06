@@ -21,6 +21,8 @@ enum class WfActionType {
     /** 底部弹面板 */
     BOTTOM_SHEET,
     /** 简单 Toast 提示 */
+    GPKG,         // ★ 本插件导入的 gpkg 文件（懒注册 + toggle）
+    DIALOG,       // ★ 点击弹 AlertDialog（payload 决定内容）
     TOAST,
 }
 
