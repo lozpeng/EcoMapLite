@@ -343,9 +343,15 @@ fun MapLayersControl(
                 // ==================== 业务图层（MapLayerManager） ====================
                 if (managerLayersEnabled) {
                     // 只展示已开启（存活）的图层；未开启的由快捷按钮/业务入口负责开启，
-                    // detach 时 revision 自增，条目自动从菜单消失
+                    // detach 时 revision 自增，条目自动从菜单消失。
+                    // ★ 框架图层（__framework__: 前缀）有专属开关（如"照片标注"），
+                    //   过滤出列表 —— 避免同一图层两处开关、启停/软显隐两种语义混用。
                     val managerLayers = remember(managerStates, managerRevision) {
-                        MapLayerManager.registeredLayers().filter { it.active }
+                        MapLayerManager.registeredLayers()
+                            .filter { it.active }
+                            .filterNot {
+                                it.fullId.startsWith("${MapLayerManager.FRAMEWORK_OWNER}:")
+                            }
                     }
                     if (managerLayers.isNotEmpty()) {
                         if (baseMapOptions.isNotEmpty() || overlays.isNotEmpty()) SectionDivider()
