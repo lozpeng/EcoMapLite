@@ -7,16 +7,15 @@ import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.LocalPolice
 import androidx.compose.ui.graphics.Color
-import org.cwcc.open.geokori.ui.material3.center.model.QuickAction
-import androidx.compose.ui.graphics.vector.ImageVector
 import org.cwcc.open.geokori.ui.material3.center.model.QuickActionSpec
+import androidx.compose.ui.graphics.vector.ImageVector
 import org.kori.plugin.wildlife.layers.IllegalEventsHeatLayer
 
 /**
  * 野生动植物插件 · 业务动作类型（类型化分发，替代按 label 字符串路由）。
  */
 enum class WfActionType {
-    /** 地图图层开关（id 路由到 MapLayerManager） */
+    /** 地图图层开关（id 路由到 MapLayerManager，支持裸 layerId 或 fullId） */
     LAYER,
     /** 底部弹面板 */
     BOTTOM_SHEET,
@@ -33,6 +32,9 @@ enum class WfActionType {
  *  · [payload]：附加参数（如 BOTTOM_SHEET 的内容 key），按类型解释
  *
  * checked/loading 仍由外部 Compose State 持有（copy 替换刷新）。
+ *
+ * 注意：LAYER 型 action 的 [id] 引用图层侧的 LAYER_ID 常量（单一事实源），
+ * 不要手写字符串 —— 图层 id 改名时编译期即可发现。
  */
 data class WfBizAction(
     override val label: String,
@@ -58,7 +60,7 @@ fun defaultBizQuickActions(): List<WfBizAction> = listOf(
         type = WfActionType.LAYER,
         containerColor = Color(0xFFF3E5F5),
         contentColor = Color(0xFF6A1B9A),
-        id = IllegalEventsHeatLayer.FULL_ID,
+        id = IllegalEventsHeatLayer.LAYER_ID,
     ),
     WfBizAction(
         label = "象实时监测",
@@ -104,6 +106,7 @@ fun defaultBizQuickActions(): List<WfBizAction> = listOf(
         contentColor = Color(0xFF00695C),
     ),
 )
+
 fun defaultWildLifeActions(): List<WfBizAction> = listOf(
     WfBizAction("动物", containerColor = Color(0xFFE3F2FD), contentColor = Color(0xFF1565C0)),
     WfBizAction("植物", containerColor = Color(0xFFF3E5F5), contentColor = Color(0xFF6A1B9A)),

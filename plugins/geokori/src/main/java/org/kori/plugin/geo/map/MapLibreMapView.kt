@@ -91,6 +91,30 @@ private const val BASE_MAP_TERRAIN = "terrain"
 private const val OVERLAY_CONTOUR = "contour"
 
 // =============================================================================================
+// 相机位置记忆：跨配置变化（折叠/展开/旋转）保留，避免 Activity 重建后跳回初始中心
+// =============================================================================================
+
+private object MapCameraMemory {
+    @Volatile var lat: Double? = null
+    @Volatile var lng: Double? = null
+    @Volatile var zoom: Double? = null
+    @Volatile var bearing: Double? = null
+    @Volatile var tilt: Double? = null
+
+    fun snapshot(map: MapLibreMap) {
+        val cp = map.cameraPosition
+        cp.target?.let { lat = it.latitude; lng = it.longitude }
+        zoom = cp.zoom
+        bearing = cp.bearing
+        tilt = cp.tilt
+    }
+
+    fun clear() {
+        lat = null; lng = null; zoom = null; bearing = null; tilt = null
+    }
+}
+
+// =============================================================================================
 // 相机缓动参数
 // =============================================================================================
 
@@ -425,7 +449,7 @@ fun MapLibreMapView(
                 BearingMode.NORTH -> {
                     // 朝北但不强制：每帧采纳相机当前 bearing（与 tilt 同理）。
                     // 初始为 0（朝北）；用户手势旋转地图后保持用户角度，不纠正回北。
-                    camCurrent[2] = map.cameraPosition.bearing.toDouble()
+                    camCurrent[2] = map.cameraPosition.bearing
                 }
             }
 
@@ -493,6 +517,7 @@ fun MapLibreMapView(
             }
             runCatching { mapRef?.let { safeDeactivateLocation(it) } }
             compass.stop()
+            mapRef?.let { MapCameraMemory.snapshot(it) }   // ★ 先记住相机，再销毁
             mapView.onStop()
             mapView.onDestroy()
             MapRuntime.detach()
@@ -578,9 +603,16 @@ fun MapLibreMapView(
                     LatLng(config.initialCenterLat, config.initialCenterLng)
                 }
 
+                // ★ 折叠/展开等配置变化重建后，优先恢复到销毁前的相机位置
+                val mem = MapCameraMemory
                 map.cameraPosition = CameraPosition.Builder()
-                    .target(initialTarget)
-                    .zoom(config.initialZoom)
+                    .target(
+                        if (mem.lat != null && mem.lng != null) LatLng(mem.lat!!, mem.lng!!)
+                        else initialTarget
+                    )
+                    .zoom(mem.zoom ?: config.initialZoom)
+                    .bearing(mem.bearing ?: 0.0)
+                    .tilt(mem.tilt ?: 0.0)
                     .build()
 
                 applyAllLayers(
@@ -600,7 +632,7 @@ fun MapLibreMapView(
                 // 实时轨迹图层
                 LiveTrackLayer.ensureLayers(style)
 
-                MapRuntime.attach(style, map)
+                MapRuntime.attach(style, map,mapView)
             }
         }
     }

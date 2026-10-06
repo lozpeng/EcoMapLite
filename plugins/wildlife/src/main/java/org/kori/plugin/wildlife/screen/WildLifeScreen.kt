@@ -54,7 +54,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.CornerRadius
@@ -112,12 +111,14 @@ fun WildLifeScreen(
         onRefresh = { viewModel.refreshWildLifeData() }
     )
 
-    // ★ 框架级图层管理器状态 → 合并进 WfBizAction（id 为全限定图层 id）
+    // ★ 框架级图层管理器状态 → 合并进 WfBizAction
+    // 注意：states 的 key 是 fullId（pluginId:layerId），action.id 可能是裸 layerId，
+    // 统一经 MapLayerManager.layerStateOf(id) 解析（支持两种 id，未绑定返回 null）
     val layerStates by MapLayerManager.states.collectAsState()
 
     val mergedBizActions = remember(bizActions, layerStates) {
         bizActions.map { action ->
-            val st = layerStates[action.id]
+            val st = MapLayerManager.layerStateOf(action.id)
             if (st == null) action
             else action.copy(checked = st.active, loading = st.loading)
         }

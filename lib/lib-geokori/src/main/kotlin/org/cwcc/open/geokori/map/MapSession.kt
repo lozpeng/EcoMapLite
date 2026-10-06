@@ -16,16 +16,31 @@ import org.maplibre.android.style.layers.Layer
 import org.maplibre.android.style.sources.Source
 import org.maplibre.geojson.Feature
 
+
+/**
+ * 地图图层声明（可选）。配合框架的插件类扫描自动注册：
+ * 插件 Session 打开时扫描插件 ClassLoader，凡 [LibreMapLayer] 非抽象子类自动注册。
+ *
+ * @param id 图层 id；空则默认取全限定类名（如 org.kori.plugin.wildlife.layers.IllegalEventsHeatLayer），
+ * 跨插件天然唯一。需要短 id（如 "illegal-events"）时显式指定。
+ */
+@Target(AnnotationTarget.CLASS)
+@Retention(AnnotationRetention.RUNTIME)
+annotation class GeoKoriLayer(val id: String = "")
 /**
  * 地图会话。
  *
  * - 通过 session 添加的要素/监听器都会被追踪，[close] 时一并移除。
  * - 支持父子嵌套：[newChild] 创建子 session；父 close 会递归 close 所有子。
  * - 所有 add/close 操作应在主线程调用（onReady 回调已在主线程）。
+ *
+ * @param owner    显示/路径名（子 session 会变为 "owner/child"）
+ * @param pluginId 所属插件 id（根 session 由 MapRuntime.openPluginSession 写入，子 session 继承，全程不变）
  */
 class MapSession internal constructor(
     val owner: String,
-    private val parent: MapSession?
+    val pluginId: String,
+    private val parent: MapSession?,
 ) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -45,7 +60,11 @@ class MapSession internal constructor(
      */
     fun newChild(childName: String): MapSession {
         check(!closed) { "MapSession($owner) 已关闭" }
-        val child = MapSession(owner = "$owner/$childName", parent = this)
+        val child = MapSession(
+            owner = "$owner/$childName",
+            pluginId = pluginId,
+            parent = this,
+        )
         synchronized(children) { children.add(child) }
         return child
     }
@@ -120,6 +139,7 @@ class MapSession internal constructor(
             runCatching { MapRuntime.currentStyle?.removeLayer(layerId) }
         }
     }
+
     // ---------- 监听器 ----------
 
     fun onMapClick(listener: (LatLng) -> Boolean) {
@@ -184,22 +204,22 @@ class MapSession internal constructor(
         trackedMapClickListeners.clear()
         trackedMapLongClickListeners.clear()
 
-        // 5. Layer（先于 Source 移除）
+        // 4. Layer（先于 Source 移除）
         if (style != null) {
             trackedLayers.forEach { runCatching { style.removeLayer(it) } }
         }
         trackedLayers.clear()
 
-        // 6. Source
+        // 5. Source
         if (style != null) {
             trackedSources.forEach { runCatching { style.removeSource(it) } }
         }
         trackedSources.clear()
 
-        // 7. 取消协程
+        // 6. 取消协程
         scope.cancel()
 
-        // 8. 从父节点移除自己
+        // 7. 从父节点移除自己
         parent?.let { p ->
             synchronized(p.children) { p.children.remove(this) }
         }

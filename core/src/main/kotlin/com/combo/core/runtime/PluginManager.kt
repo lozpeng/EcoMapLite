@@ -60,6 +60,7 @@ object PluginManager {
         get() = requireContext().authorizationManager
 
     internal fun getClassIndex(): Map<String, String> = requireContext().classIndex
+    fun getClassIndexSnapshot(): Map<String, String> = getClassIndex()
 
     private val managerScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 

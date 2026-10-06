@@ -94,7 +94,7 @@ kotlin {
 }
 packagePlugins {
     enabled.set(true)
-    buildType.set(PackageBuildType.RELEASE)
+    buildType.set(PackageBuildType.DEBUG)
     pluginsDir.set("debug_plugins")
 }
 configurations.all {
