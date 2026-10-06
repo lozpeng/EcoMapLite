@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.maplibre.android.maps.MapLibreMap
+import timber.log.Timber
 import java.util.concurrent.ConcurrentHashMap
 
 
@@ -349,10 +350,9 @@ object MapLayerManager {
         }
         bound.forEach { pending.remove(it) }
         if (pending.isNotEmpty()) {
-            Log.w(
-                "MapLayerManager",
+            Timber.w(
                 "以下手动注册未绑定到任何插件 Session: ${pending.keys}；" +
-                        "请确认这些类由插件 ClassLoader 加载",
+                        "请确认这些类由插件 ClassLoader 加载"
             )
         }
 
@@ -374,12 +374,11 @@ object MapLayerManager {
                             existing != null -> {
                                 registrations[fid] = reg
                                 update(fid, _states.value[fid] ?: MapLayerState())
-                                Log.w(
-                                    "MapLayerManager",
+                                Timber.w(
                                     "layerId「$layerId」在插件「${existing.substringBefore(':')}」" +
                                             "已存在；「$pluginId」的同名图层已按「$fid」注册" +
                                             "（UI 开关正常），但裸 layerId 调用将解析到前者。" +
-                                            "建议用 @GeoKoriLayer 显式指定不同 id",
+                                            "建议用 @GeoKoriLayer 显式指定不同 id"
                                 )
                             }
                             else ->
@@ -460,7 +459,7 @@ object MapLayerManager {
         val layer = liveLayers[fid] ?: return false
         val a = alpha.coerceIn(0f, 1f)
         runCatching { layer.setLayerAlpha(a) }
-            .onFailure { Log.e("MapLayerManager", "setOpacity($fid, $a) 应用失败", it) }
+            .onFailure { Timber.e(it, "setOpacity($fid, $a) 应用失败") }
         opacityOf[fid] = a
         bumpRevision()
         return true
@@ -477,7 +476,7 @@ object MapLayerManager {
     @Synchronized
     fun toggle(id: String, context: Context): Boolean {
         val fid = resolveFullId(id) ?: run {
-            Log.w("MapLayerManager", "toggle 未找到图层「$id」（尚未扫描绑定？）")
+            Timber.w("toggle 未找到图层「$id」（尚未扫描绑定？）")
             return false
         }
         val reg = registrations[fid] ?: return false

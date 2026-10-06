@@ -98,7 +98,11 @@ class GeoPackageLayer(
         private const val FILL_OPACITY = 0.35f
         private const val FILL_OUTLINE_COLOR = "#1B5E20"
 
-        private const val LABEL_FIELD = "name"
+        /** 源列匹配名（大小写不敏感）：数据里叫 NAME/name/Name 的列 */
+        private const val SOURCE_LABEL_COLUMN = "name"
+
+        /** 标注用合成属性键（__ 前缀 = 内部键，不进属性弹窗） */
+        private const val LABEL_FIELD = "__label"
         private const val LABEL_MIN_ZOOM = 12f
     }
 
@@ -126,7 +130,7 @@ class GeoPackageLayer(
         val gpkg = GeoPackageFactory.openExternal(gpkgFile)
         try {
             val features = mutableListOf<Feature>()
-            var hasLabelField = false
+            var hasLabel = false
 
             for (table in gpkg.featureTables) {
                 if (tableFilter != null && tableFilter?.invoke(table) != true) continue
@@ -139,15 +143,14 @@ class GeoPackageLayer(
                         val geomData = row.geometry ?: continue
                         val sfGeom = geomData.geometry ?: continue
                         val mlGeom = toMapLibreGeometry(sfGeom) ?: continue
-                        features.add(Feature.fromGeometry(mlGeom, rowProps(row)))
+                        val props = rowProps(row)
+                        if (props.has(LABEL_FIELD)) hasLabel = true
+                        features.add(Feature.fromGeometry(mlGeom, props))
                     }
-                }
-                if (LABEL_FIELD.isNotBlank() && dao.columnNames.contains(LABEL_FIELD)) {
-                    hasLabelField = true
                 }
             }
 
-            hasLabelColumn = hasLabelField
+            hasLabelColumn = hasLabel
             return FeatureCollection.fromFeatures(features).toJson()
         } finally {
             gpkg.close()
@@ -166,6 +169,11 @@ class GeoPackageLayer(
                 is Boolean -> o.addProperty(name, value)
                 else -> o.addProperty(name, value.toString())
             }
+        }
+        // ★ 统一标注字段：匹配 SOURCE_LABEL_COLUMN（NAME/name，大小写不敏感）→ 复制到 LABEL_FIELD，
+        // 原字段保留且只在属性表出现一次；标注层只认 LABEL_FIELD
+        names.firstOrNull { it.equals(SOURCE_LABEL_COLUMN, ignoreCase = true) }?.let { labelCol ->
+            o.addProperty(LABEL_FIELD, row.getValue(names.indexOf(labelCol))?.toString() ?: "")
         }
         o.addProperty("__table", row.table.tableName)
         return o
@@ -214,7 +222,8 @@ class GeoPackageLayer(
             else -> null
         }
 
-    private var hasLabelColumn = LABEL_FIELD.isNotBlank()
+    /** 本次数据是否含可标注字段（读取时回填；仅点/面要素参与标注） */
+    private var hasLabelColumn = false
 
     // =========================================================================================
     // 图层组装：按几何类型三（四）层共用一源
@@ -255,7 +264,8 @@ class GeoPackageLayer(
                     )
                 },
         )
-        // 注记（可选）
+        // 注记（可选）：仅标注含 "name" 属性的点/面（含 Multi）要素；
+        // 面要素 MapLibre 自动取内部点（可视作中心点）为锚点，一个面只标一次
         if (hasLabelColumn) {
             session.addLayer(
                 symbolLayer(labelLayerId, sourceId, minZoom = LABEL_MIN_ZOOM)
@@ -269,6 +279,17 @@ class GeoPackageLayer(
                             PropertyFactory.textOffset(arrayOf(0f, 1f)),
                             PropertyFactory.textAnchor(Property.TEXT_ANCHOR_TOP),
                             PropertyFactory.textAllowOverlap(false),
+                        )
+                        setFilter(
+                            Expression.all(
+                                Expression.has(LABEL_FIELD),
+                                Expression.any(
+                                    Expression.eq(Expression.geometryType(), Expression.literal("Point")),
+                                    Expression.eq(Expression.geometryType(), Expression.literal("MultiPoint")),
+                                    Expression.eq(Expression.geometryType(), Expression.literal("Polygon")),
+                                    Expression.eq(Expression.geometryType(), Expression.literal("MultiPolygon")),
+                                ),
+                            ),
                         )
                     },
             )
@@ -709,7 +730,8 @@ object GpkgAttrSheet {
                         .fillMaxWidth()
                         .height(360.dp),
                 ) {
-                    items(entries.filter { it.first != "__table" }) { (k, v) ->
+                    // __ 前缀为内部合成键（__table/__label 等），不展示
+                    items(entries.filter { !it.first.startsWith("__") }) { (k, v) ->
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
