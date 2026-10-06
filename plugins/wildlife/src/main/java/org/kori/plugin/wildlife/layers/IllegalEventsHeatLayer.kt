@@ -18,6 +18,7 @@ import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.geojson.FeatureCollection
 import timber.log.Timber
 import androidx.core.graphics.toColorInt
+import org.kori.plugin.wildlife.ui.IllegalEventAttrSheet
 
 /**
  * 盗猎事件热力图图层。
