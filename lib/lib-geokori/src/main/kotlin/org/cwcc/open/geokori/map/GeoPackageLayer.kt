@@ -643,6 +643,7 @@ fun rememberGpkgImport(): GpkgImportState {
 
 // =================================================================================================
 // 通用属性弹窗：列出要素全部字段
+// 关闭为两段式（先 hide() 播收起动画、动画完才除名卸载），避免残影/闪断。
 // =================================================================================================
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -650,19 +651,31 @@ object GpkgAttrSheet {
 
     private val _feature = MutableStateFlow<Feature?>(null)
 
+    /** 显示标记：与数据分离，关闭动画期间数据保留，内容不闪空 */
+    private val _visible = MutableStateFlow(false)
+
     fun show(feature: Feature) {
         _feature.value = feature
+        _visible.value = true
     }
 
+    /** 关闭：只标记隐藏（动画播完才真正卸载） */
     fun dismiss() {
-        _feature.value = null
+        _visible.value = false
     }
 
     @Composable
     fun Host() {
         val feature by _feature.collectAsState()
-        val f = feature ?: return
+        val visible by _visible.collectAsState()
         val sheetState = rememberModalBottomSheetState()
+        val scope = rememberCoroutineScope()
+
+        val f = feature
+        // 隐藏且动画不在跑 → 收起动画已播完，允许真正卸载；中途状态保持挂载
+        if (f == null || (!visible && !sheetState.isVisible && !sheetState.isAnimationRunning)) {
+            return
+        }
 
         val entries = remember(f) {
             val o = f.properties()?.asJsonObject
@@ -671,7 +684,13 @@ object GpkgAttrSheet {
         }
 
         ModalBottomSheet(
-            onDismissRequest = { dismiss() },
+            onDismissRequest = {
+                // 手势下滑 / 点 scrim / 返回键 统一入口：先播收起动画，再除名
+                scope.launch {
+                    sheetState.hide()
+                    _feature.value = null
+                }
+            },
             sheetState = sheetState,
         ) {
             Column(

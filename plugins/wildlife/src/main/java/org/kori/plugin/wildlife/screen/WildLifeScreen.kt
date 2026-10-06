@@ -15,6 +15,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -35,26 +36,26 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.ExperimentalMaterialApi
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.pullrefresh.pullRefresh
 import androidx.compose.material.pullrefresh.rememberPullRefreshState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -79,6 +80,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.cwcc.open.geokori.framework.PluginModuleUtils
@@ -148,14 +150,18 @@ fun WildLifeScreen(
         }
     }
 
-    // gpkg 动态按钮（编辑模式可移除）
-    val gpkgActions = remember(dispatcher.gpkg.imported) {
-        dispatcher.gpkg.imported.map {
+    // gpkg 动态按钮（编辑模式可移除；checked/loading 与静态按钮同源）
+    val gpkgActions = remember(dispatcher.gpkg.imported, layerStates) {
+        dispatcher.gpkg.imported.map { imp ->
+            val st = MapLayerManager.layerStateOf(imp.layerId)
             WfBizAction(
-                label = it.label,
+                label = imp.label,
                 type = WfActionType.GPKG,
-                payload = it.fileName,
-                id = it.layerId,
+                payload = imp.fileName,
+                id = imp.layerId,
+                icon = Icons.Default.Layers,
+                checked = st?.active == true,
+                loading = st?.loading == true,
             )
         }
     }
@@ -568,68 +574,87 @@ private fun EditableQuickActions(
         modifier = Modifier
             .fillMaxWidth()
             .padding(top = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         actions.forEach { action ->
             val editable = removable(action)
-            Box {
-                Surface(
-                    color = action.containerColor,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .graphicsLayer {
-                            if (editMode && editable) {
-                                rotationZ = angle
-                                translationX = angle * 0.6f
-                            }
-                        }
-                        .combinedClickable(
-                            onClick = {
-                                if (editMode) onEditModeChange(false)  // 编辑态点空白处退出
-                                else onClick(action)
-                            },
-                            onLongClick = { if (editable) onEditModeChange(true) },
-                        ),
-                ) {
-                    Column(
-                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        action.icon?.let {
-                            Icon(
-                                imageVector = it,
-                                contentDescription = null,
-                                tint = action.contentColor,
-                                modifier = Modifier.size(22.dp),
-                            )
-                        }
-                        Text(
-                            text = action.label,
-                            color = action.contentColor,
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                    }
-                }
-
-                // 红底减号角标（编辑态）
-                if (editMode && editable) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Box {
+                    // 圆圈按钮（与框架 ExpandedQuickActions 同款结构）
+                    // checked → 高亮环；loading → 转圈替代图标
                     Box(
                         modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .offset(6.dp, (-6).dp)
-                            .size(20.dp)
-                            .background(Color(0xFFF44336), CircleShape)
-                            .clickable { onRemove(action) },
+                            .size(48.dp)
+                            .graphicsLayer {
+                                if (editMode && editable) {
+                                    rotationZ = angle
+                                    translationX = angle * 0.6f
+                                }
+                            }
+                            .background(action.containerColor, CircleShape)
+                            .then(
+                                if (action.checked && !editMode) {
+                                    Modifier.border(
+                                        width = 2.dp,
+                                        color = action.checkedContainerColor,
+                                        shape = CircleShape,
+                                    )
+                                } else Modifier
+                            )
+                            .combinedClickable(
+                                onClick = {
+                                    if (editMode) onEditModeChange(false)  // 编辑态点空白处退出
+                                    else onClick(action)
+                                },
+                                onLongClick = { if (editable) onEditModeChange(true) },
+                            ),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Text(
-                            text = "−",
-                            color = Color.White,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                        )
+                        when {
+                            action.loading ->
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(22.dp),
+                                    strokeWidth = 2.dp,
+                                    color = action.contentColor,
+                                )
+                            else -> Icon(
+                                imageVector = action.icon ?: Icons.Default.Layers,
+                                contentDescription = null,
+                                tint = action.contentColor,
+                                modifier = Modifier.size(24.dp),
+                            )
+                        }
+                    }
+
+                    // 红底减号角标（编辑态）
+                    if (editMode && editable) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .offset(4.dp, (-4).dp)
+                                .size(20.dp)
+                                .background(Color(0xFFF44336), CircleShape)
+                                .clickable { onRemove(action) },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                text = "−",
+                                color = Color.White,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                            )
+                        }
                     }
                 }
+                // 圆圈下方文字
+                Text(
+                    text = action.label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
             }
         }
     }
