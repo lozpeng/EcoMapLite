@@ -191,7 +191,7 @@ class MapIconUtil(private val context: Context) {
         scale: Float = 1.0f,
         circleClip: Boolean = false,
     ) = apply {
-        inners += InnerIcon(resId, null, tint, scale.coerceIn(0.05f, 1.5f), circleClip)
+        inners += InnerIcon(resId, null, tint, scale.coerceIn(0.05f, 4.0f), circleClip)
     }
 
     /**
@@ -206,7 +206,7 @@ class MapIconUtil(private val context: Context) {
         scale: Float = 1.0f,
         circleClip: Boolean = false,
     ) = apply {
-        inners += InnerIcon(0, drawable.mutate(), tint, scale.coerceIn(0.05f, 1.5f), circleClip)
+        inners += InnerIcon(0, drawable.mutate(), tint, scale.coerceIn(0.05f, 4.0f), circleClip)
     }
 
     /** 在中心区域叠放一个 [Bitmap]（包装为 BitmapDrawable），规则同 [inner] */
@@ -235,7 +235,7 @@ class MapIconUtil(private val context: Context) {
             resId = 0,
             drawable = drawable.mutate(),
             tint = null,
-            scale = scale.coerceIn(0.05f, 1.5f),
+            scale = scale.coerceIn(0.05f, 4.0f),
             circleClip = true,
             ringColor = ringColor,
             ringRatio = ringRatio.coerceIn(0.005f, 0.2f),
@@ -266,7 +266,7 @@ class MapIconUtil(private val context: Context) {
 
     fun innerDisc(@ColorInt color: Int, diameterScale: Float = 1.0f) = apply {
         discColorValue = color
-        discScale = diameterScale.coerceIn(0.3f, 1.2f)
+        discScale = diameterScale.coerceIn(0.3f, 3.0f)
     }
 
     /** 关闭中心圆盘 */

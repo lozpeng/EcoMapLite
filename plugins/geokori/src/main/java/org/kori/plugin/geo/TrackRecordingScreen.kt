@@ -53,8 +53,14 @@ import org.kori.plugin.geo.track.ui.TrackTimelineScreen
  *  · ★ 开始记录前的权限闸门（后台记录前提）：
  *     1. 定位 + 通知权限 → 普通弹框
  *     2. 后台定位（"始终允许"）→ 未授予时引导到系统设置页
- *  · ★【新增】响应 home 的 ACTION_SHOW_HISTORY 命令：弹出 TrackHistoryScreen
+ *  · ★ 响应 home 的 ACTION_SHOW_HISTORY 命令：弹出 TrackHistoryScreen
  *    （TrackUiEvents 与本品同包 org.kori.plugin.geo，无需 import）
+ *
+ * ## 回放集成
+ *
+ * [TrackPlaybackScreen] 默认使用 [TrackSession.media] 显示媒体点位
+ * （录音 / 录像 / 照片），媒体路径的相对 → 绝对转换在回放屏内部完成。
+ * 因此本屏调用处无需再传 `loadMedia`。
  *
  * ## 使用
  *
@@ -99,7 +105,7 @@ fun TrackRecordingScreen(
         onDispose { TrackRecordingEngine.registerResumePromptHandler(null) }
     }
 
-    // ★【新增】响应"显示历史"命令（home 广播 → TrackCommandReceiver → TrackUiEvents）
+    // ★ 响应"显示历史"命令（home 广播 → TrackCommandReceiver → TrackUiEvents）
     LaunchedEffect(Unit) {
         TrackUiEvents.showHistory.collect {
             showTrackHistory = true
@@ -239,10 +245,13 @@ fun TrackRecordingScreen(
         }
 
         // ★ 轨迹回放（全屏沉浸式）
+        //   session.media 已由 TrackSessionStore.readSession 从 <sessionDir>/media/*.json
+        //   读出（见 TrackSessionStore.readMedia），回放屏默认直接使用它。
         playbackSession?.let { session ->
             TrackPlaybackScreen(
                 session = session,
                 onClose = { playbackSession = null },
+                // loadMedia 不传 → 默认 { it.media }，无需再走 Engine 读磁盘
             )
         }
 

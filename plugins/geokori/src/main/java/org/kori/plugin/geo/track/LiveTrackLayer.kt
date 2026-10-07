@@ -1,5 +1,18 @@
 package org.kori.plugin.geo.track
 
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.ColorFilter
+import android.graphics.Paint
+import android.graphics.PixelFormat
+import android.graphics.drawable.Drawable
+import android.util.Log
+import android.util.LruCache
+import androidx.core.graphics.PathParser
+import org.cwcc.open.geokori.lib.utils.MapIconUtil
 import org.kori.plugin.geo.track.di.TrackMediaRecord
 import org.kori.plugin.geo.track.di.TrackPoint
 import org.maplibre.android.maps.Style
@@ -7,46 +20,41 @@ import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.PropertyFactory
+import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.LineString
 import org.maplibre.geojson.Point
-import kotlin.collections.map
+import java.io.File
 
 /**
  * 实时轨迹图层。
  *
- * ## 三条图层（自下而上）
+ * ## 图层（自下而上）
  *
  * ```
  * vela-track-live-raw       原始 GPS 轨迹（红色实线，宽 5px）
  * vela-track-live-smooth    平滑后轨迹（蓝色虚线，宽 3px）
- * vela-track-live-media     媒体点位（按类型着色：照片红 / 视频紫 / 录音青）
+ * vela-track-live-media     媒体点位（SymbolLayer；AUDIO/VIDEO 为图标针，PHOTO 为照片气泡针）
+ * vela-track-history        历史轨迹叠加（橙线）
+ * vela-track-playback       回放标记（亮青圆点）
  * ```
  *
- * ## 生命周期
+ * ## 媒体图标规则
  *
- *  · [ensureLayers] —— 在地图 `setStyle` 回调里调用一次。幂等。
- *  · [updateTrack] —— 每次实时点变化时调用（由 `MapLibreMapView` 内部 effect 触发）
- *  · [updateMedia] —— 媒体列表变化时调用
- *  · [clearTrack] —— 记录停止时清空轨迹（保留图层，只清数据）
- *  · [removeLayers] —— 彻底卸载图层（用于地图销毁）
+ * | 类型  | 外观                                                              |
+ * | ----- | ----------------------------------------------------------------- |
+ * | AUDIO | MAP_PIN（青绿底板）+ 白色圆盘 + 话筒图标                          |
+ * | VIDEO | MAP_PIN（紫底板）+ 白色圆盘 + 录像图标                            |
+ * | PHOTO | `MapIconUtil.photoPin` 照片气泡针（白边圆角缩略图 + 底部白尾）    |
+ * | 其它  | 走 photoPin 占位风格（无底图时浅灰圆角）                          |
  *
- * ## 与其他模块的关系
+ * ## 数据驱动图标大小
  *
- * ```
- * SegmentedTrackRecorder
- *     └─ liveTrack: SharedFlow<Pair<List<TrackPoint>, List<TrackPoint>>>
- *         └─ TrackRecordingEngine.state.liveTrackPoints / liveSmoothPoints
- *             └─ MapLibreMapView(liveTrackPoints, liveSmoothPoints, liveTrackMedia)
- *                 └─ LiveTrackLayer.updateTrack / updateMedia
- * ```
- *
- * ## 数据来源
- *
- * `TrackPoint` 已由 `SegmentedTrackRecorder` 限制到 `LIVE_BUFFER_MAX = 2000` 个点，
- * 所以不需要在这里再做截断。
+ * [updateMedia] 的 `scales: filePath -> scale` 会写进 GeoJSON feature 的 `scale` 属性；
+ * SymbolLayer 的 `iconSize` 表达式读取该属性，回放循环每帧更新 map 即可实现
+ * "到点弹出"的缩放动画。
  */
 object LiveTrackLayer {
 
@@ -77,31 +85,49 @@ object LiveTrackLayer {
     // ---- 颜色 ----
     private const val COLOR_RAW = "#FF5252"        // 原始：红
     private const val COLOR_SMOOTH = "#1A73E8"     // 平滑：蓝
-    private const val COLOR_HISTORY = "#FF9100"        // 历史轨迹：亮橙（醒目）
-    private const val COLOR_PLAYBACK = "#00E5FF"       // 回放标记：亮青
-    private const val COLOR_MEDIA_DEFAULT = "#5F6368"  // 媒体默认：灰
-    private const val COLOR_MEDIA_PHOTO = "#FF5252"    // 照片：红
-    private const val COLOR_MEDIA_VIDEO = "#9334E6"    // 视频：紫
-    private const val COLOR_MEDIA_AUDIO = "#00897B"    // 录音：青
+    private const val COLOR_HISTORY = "#FF9100"    // 历史轨迹：亮橙
+    private const val COLOR_PLAYBACK = "#00E5FF"   // 回放标记：亮青
+    private const val COLOR_MEDIA_VIDEO = "#9334E6"    // 视频底板：紫
+    private const val COLOR_MEDIA_AUDIO = "#00897B"    // 录音底板：青绿
+
+    // ---- 媒体图标生成参数 ----
+    /** 输出图标边长（像素）。太小会糊，太大费内存；128 是一个平衡点。 */
+    private const val MEDIA_ICON_SIZE_PX = 128
+
+    private const val TAG = "LiveTrackLayer"
+
+    // Material Design 24×24 viewport 图标 pathData
+    private const val PATH_MIC =
+        "M12,14c1.66,0 2.99,-1.34 2.99,-3L15,5c0,-1.66 -1.34,-3 -3,-3S9,3.34 9,5v6c0,1.66 " +
+                "1.34,3 3,3zM17.3,11c0,3 -2.54,5.1 -5.3,5.1S6.7,14 6.7,11H5c0,3.41 2.72,6.23 " +
+                "6,6.72V21h2v-3.28c3.28,-0.48 6,-3.3 6,-6.72h-1.7z"
+
+    private const val PATH_VIDEO =
+        "M17,10.5V7c0,-0.55 -0.45,-1 -1,-1H4c-0.55,0 -1,0.45 -1,1v10c0,0.55 0.45,1 1,1h12c0.55,0 " +
+                "1,-0.45 1,-1v-3.5l4,4v-11l-4,4z"
+
+    /** 图标位图缓存（key = iconId），跨地图实例共享，避免重复生成 / 重复读照片。 */
+    private val mediaIconCache = object : LruCache<String, Bitmap>(64) {
+        override fun sizeOf(key: String, value: Bitmap): Int = 1
+    }
 
     // =============================================================================================
     // 图层创建
     // =============================================================================================
 
     /**
-     * 创建所有实时轨迹图层（幂等）。
-     *
-     * 在地图 `setStyle` 回调里调用。若图层已存在则跳过。
+     * 创建所有实时轨迹图层（幂等）。在地图 `setStyle` 回调里调用。
      */
     fun ensureLayers(style: Style) {
         ensureRawTrackLayer(style)
         ensureSmoothTrackLayer(style)
-        ensureMediaLayer(style)
         ensureHistoryLayer(style)
         ensurePlaybackLayer(style)
+        // ★ 媒体图标永远创建在最上层，不被轨迹线/回放点盖住
+        ensureMediaLayer(style)
     }
 
-    // ---- 回放标记层（亮青圆点 + 白色描边，置顶）----
+    // ---- 回放标记层 ----
     private fun ensurePlaybackLayer(style: Style) {
         if (style.getSource(SRC_PLAYBACK) == null) {
             style.addSource(GeoJsonSource(SRC_PLAYBACK))
@@ -132,7 +158,7 @@ object LiveTrackLayer {
         )
     }
 
-    // ---- 历史轨迹层（多段灰线）----
+    // ---- 历史轨迹层 ----
     private fun ensureHistoryLayer(style: Style) {
         if (style.getSource(SRC_HISTORY) == null) {
             style.addSource(GeoJsonSource(SRC_HISTORY))
@@ -187,27 +213,32 @@ object LiveTrackLayer {
         }
     }
 
-    // ---- 媒体层 ----
+    // ---- 媒体层（SymbolLayer） ----
     private fun ensureMediaLayer(style: Style) {
         if (style.getSource(SRC_MEDIA) == null) {
             style.addSource(GeoJsonSource(SRC_MEDIA))
         }
+        // 兼容旧版本：若遗留的是 CircleLayer，先移除
+        style.getLayer(LAYER_MEDIA)?.let { existing ->
+            if (existing !is SymbolLayer) style.removeLayer(existing)
+        }
         if (style.getLayer(LAYER_MEDIA) == null) {
             style.addLayer(
-                CircleLayer(LAYER_MEDIA, SRC_MEDIA).withProperties(
-                    PropertyFactory.circleRadius(8f),
-                    PropertyFactory.circleStrokeWidth(2f),
-                    PropertyFactory.circleStrokeColor("#FFFFFF"),
-                    // 按媒体类型着色
-                    PropertyFactory.circleColor(
-                        Expression.match(
-                            Expression.get("type"),
-                            Expression.literal(COLOR_MEDIA_DEFAULT),
-                            Expression.stop("PHOTO", COLOR_MEDIA_PHOTO),
-                            Expression.stop("VIDEO", COLOR_MEDIA_VIDEO),
-                            Expression.stop("AUDIO", COLOR_MEDIA_AUDIO),
+                SymbolLayer(LAYER_MEDIA, SRC_MEDIA).withProperties(
+                    // iconId 由 feature 携带 → 不同媒体点位显示各自图标
+                    PropertyFactory.iconImage(Expression.get("iconId")),
+                    // ★ scale 由 feature 提供；未设置时回退 1
+                    PropertyFactory.iconSize(
+                        Expression.coalesce(
+                            Expression.get("scale"),
+                            Expression.literal(1f),
                         ),
                     ),
+                    // 底部锚点：MAP_PIN 针尖 / photoPin 尾巴末端贴近坐标
+                    PropertyFactory.iconAnchor("bottom"),
+                    PropertyFactory.iconAllowOverlap(true),
+                    PropertyFactory.iconIgnorePlacement(true),
+                    PropertyFactory.iconPitchAlignment("map"),
                 ),
             )
         }
@@ -217,18 +248,15 @@ object LiveTrackLayer {
     // 图层移除
     // =============================================================================================
 
-    /**
-     * 彻底移除所有实时轨迹图层和源。
-     *
-     * 用于地图销毁或完全切换样式时。通常不需要手动调用——
-     * 地图销毁时 MapView 会自动清理。
-     */
+    /** 彻底移除所有图层和源（用于地图销毁或完全切换样式）。 */
     fun removeLayers(style: Style) {
         runCatching { style.removeLayer(LAYER_PLAYBACK) }
+        runCatching { style.removeLayer(LAYER_HISTORY) }
         runCatching { style.removeLayer(LAYER_MEDIA) }
         runCatching { style.removeLayer(LAYER_SMOOTH) }
         runCatching { style.removeLayer(LAYER_RAW) }
         runCatching { style.removeSource(SRC_PLAYBACK) }
+        runCatching { style.removeSource(SRC_HISTORY) }
         runCatching { style.removeSource(SRC_MEDIA) }
         runCatching { style.removeSource(SRC_SMOOTH) }
         runCatching { style.removeSource(SRC_RAW) }
@@ -238,11 +266,7 @@ object LiveTrackLayer {
     // 数据更新
     // =============================================================================================
 
-    /**
-     * 清空轨迹（记录停止时调用）。
-     *
-     * 图层保留，只清数据。这样下次开始记录时不需要重新创建图层。
-     */
+    /** 清空轨迹（记录停止时）。图层保留，只清数据。 */
     fun clearTrack(style: Style) {
         style.getSourceAs<GeoJsonSource>(SRC_RAW)?.setGeoJson(
             FeatureCollection.fromFeatures(emptyList<Feature>()),
@@ -252,11 +276,6 @@ object LiveTrackLayer {
         )
     }
 
-    /**
-     * 更新历史轨迹叠加层（历史浏览时把已保存轨迹画在地图上）。
-     *
-     * @param segments 多个轨迹段（如：每个会话一条），每段 ≥2 点才绘制
-     */
     fun updateHistory(style: Style, segments: List<List<TrackPoint>>) {
         val src = style.getSourceAs<GeoJsonSource>(SRC_HISTORY) ?: return
         val features = segments
@@ -271,21 +290,18 @@ object LiveTrackLayer {
         src.setGeoJson(FeatureCollection.fromFeatures(features))
     }
 
-    /** 清空历史轨迹叠加层。 */
     fun clearHistory(style: Style) {
         style.getSourceAs<GeoJsonSource>(SRC_HISTORY)?.setGeoJson(
             FeatureCollection.fromFeatures(emptyList<Feature>()),
         )
     }
 
-    /** 清空媒体点位。 */
     fun clearMedia(style: Style) {
         style.getSourceAs<GeoJsonSource>(SRC_MEDIA)?.setGeoJson(
             FeatureCollection.fromFeatures(emptyList<Feature>()),
         )
     }
 
-    /** 清空所有（轨迹 + 媒体）。 */
     fun clearAll(style: Style) {
         clearTrack(style)
         clearMedia(style)
@@ -293,18 +309,11 @@ object LiveTrackLayer {
         updatePlayback(style, null)
     }
 
-    /**
-     * 更新轨迹。
-     *
-     * @param rawPoints   原始轨迹点（红色实线）
-     * @param smoothPoints 平滑轨迹点（蓝色虚线），可为空
-     */
     fun updateTrack(
         style: Style,
         rawPoints: List<TrackPoint>,
         smoothPoints: List<TrackPoint> = emptyList(),
     ) {
-        // ---- 原始轨迹 ----
         val rawSrc = style.getSourceAs<GeoJsonSource>(SRC_RAW)
         rawSrc?.setGeoJson(
             if (rawPoints.size < 2) {
@@ -320,7 +329,6 @@ object LiveTrackLayer {
             },
         )
 
-        // ---- 平滑轨迹 ----
         val smoothSrc = style.getSourceAs<GeoJsonSource>(SRC_SMOOTH)
         smoothSrc?.setGeoJson(
             if (smoothPoints.size < 2) {
@@ -340,24 +348,138 @@ object LiveTrackLayer {
     /**
      * 更新媒体点位。
      *
-     * 每个媒体是一个带 `type` 属性的 Point 特征，图层按 `type` 着色。
+     * @param context 用于 [MapIconUtil] 生成图标与读取照片文件
+     * @param scales  `filePath -> scale`（0 隐藏，1 完全显示，中间值动画）。
+     *                空 map = 全部按 scale=1 显示；非空时缺失项按 0 处理。
      */
-    fun updateMedia(style: Style, media: List<TrackMediaRecord>) {
-        val src = style.getSourceAs<GeoJsonSource>(SRC_MEDIA) ?: return
-        src.setGeoJson(
-            FeatureCollection.fromFeatures(
-                media.map { m ->
-                    Feature.fromGeometry(
-                        Point.fromLngLat(m.lng, m.lat),
-                    ).apply {
-                        addStringProperty("type", m.type.name)
-                        addStringProperty("filePath", m.filePath)
-                        addNumberProperty("timestampMs", m.timestampMs)
-                        m.durationSec?.let { addNumberProperty("durationSec", it) }
-                        m.accuracyM?.let { addNumberProperty("accuracyM", it.toDouble()) }
-                    }
-                },
-            ),
-        )
+    fun updateMedia(
+        style: Style,
+        context: Context,
+        media: List<TrackMediaRecord>,
+        scales: Map<String, Float> = emptyMap(),
+    ) {
+        val src = style.getSourceAs<GeoJsonSource>(SRC_MEDIA)
+        if (src == null) {
+            // ★ 静默失败防护：图层未建好时打日志，便于排查
+            Log.w(TAG, "updateMedia: 媒体源 $SRC_MEDIA 不存在（ensureLayers 未调用？）")
+            return
+        }
+        Log.i(TAG, "updateMedia: media=${media.size}, scales=${scales.size}")
+
+        val features = media.map { m ->
+            val iconId = mediaIconId(m)
+            if (style.getImage(iconId) == null) {
+                val bmp = mediaIconCache[iconId] ?: generateMediaBitmap(context, m).also {
+                    mediaIconCache.put(iconId, it)
+                }
+                style.addImage(iconId, bmp)
+            }
+            val scale = if (scales.isEmpty()) 1f else (scales[m.filePath] ?: 0f)
+            Feature.fromGeometry(Point.fromLngLat(m.lng, m.lat)).apply {
+                addStringProperty("iconId", iconId)
+                addNumberProperty("scale", scale)
+                addStringProperty("type", m.type.name)
+                addStringProperty("filePath", m.filePath)
+                addNumberProperty("timestampMs", m.timestampMs)
+                m.durationSec?.let { addNumberProperty("durationSec", it) }
+                m.accuracyM?.let { addNumberProperty("accuracyM", it.toDouble()) }
+            }
+        }
+        src.setGeoJson(FeatureCollection.fromFeatures(features))
     }
+
+    // =============================================================================================
+    // 媒体图标生成
+    // =============================================================================================
+
+    /**
+     * 每个媒体对应一个稳定的 iconId。key 必须包含类型和版本号——
+     * 图标样式参数（尺寸/颜色/底盘）变化时 bump 版本，否则 LruCache
+     * 会一直返回旧样式的位图（静默不生效）。
+     */
+    private fun mediaIconId(m: TrackMediaRecord): String =
+        "vela-media-v2-" + m.type.name + "-" + m.filePath.hashCode().toUInt().toString(16)
+
+    private fun generateMediaBitmap(context: Context, m: TrackMediaRecord): Bitmap =
+        when (m.type.name.uppercase()) {
+            "AUDIO" -> MapIconUtil(context)
+                .base(MapIconUtil.BaseType.MAP_PIN)
+                .baseColor(Color.parseColor(COLOR_MEDIA_AUDIO))
+                .innerDisc(Color.WHITE, diameterScale = 2.56f)   // 白色圆盘放大
+                .inner(buildVectorIcon(PATH_MIC), tint = Color.RED, scale = 1.13f)
+                .generateBitmap(MEDIA_ICON_SIZE_PX)
+
+            "VIDEO" -> MapIconUtil(context)
+                .base(MapIconUtil.BaseType.MAP_PIN)
+                .baseColor(Color.parseColor(COLOR_MEDIA_VIDEO))
+                .innerDisc(Color.WHITE, diameterScale = 2.56f)   // 白色圆盘放大
+                .inner(buildVectorIcon(PATH_VIDEO), tint = Color.RED, scale = 1.13f)
+                .generateBitmap(MEDIA_ICON_SIZE_PX)
+
+            else -> {
+                // PHOTO 及未知类型 → 照片气泡针
+                val thumb = loadThumbnail(m.filePath, MEDIA_ICON_SIZE_PX)
+                MapIconUtil.photoPin(
+                    photo = thumb,
+                    sizePx = MEDIA_ICON_SIZE_PX,
+                    frameColor = Color.WHITE,
+                    placeholderColor = 0xFFE0E0E0.toInt(),
+                )
+            }
+        }
+
+    /**
+     * 用 24×24 viewport 的 pathData 现场构造一个轻量 [Drawable]，
+     * 交给 [MapIconUtil.inner] 后会自动按 bounds 缩放平移到中心圆盘。
+     */
+    private fun buildVectorIcon(pathData: String, viewport: Float = 24f): Drawable =
+        object : Drawable() {
+            private val path = PathParser.createPathFromPathData(pathData)
+            private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.WHITE // 会被 MapIconUtil 的 tint 覆盖
+                style = Paint.Style.FILL
+            }
+
+            override fun draw(canvas: Canvas) {
+                val b = bounds
+                if (b.isEmpty) return
+                val save = canvas.save()
+                canvas.translate(b.left.toFloat(), b.top.toFloat())
+                canvas.scale(b.width() / viewport, b.height() / viewport)
+                canvas.drawPath(path, paint)
+                canvas.restoreToCount(save)
+            }
+
+            override fun setAlpha(alpha: Int) { paint.alpha = alpha }
+            override fun setColorFilter(colorFilter: ColorFilter?) {
+                paint.colorFilter = colorFilter
+            }
+
+            @Deprecated("Deprecated in Java")
+            override fun getOpacity(): Int = PixelFormat.TRANSLUCENT
+        }
+
+    /**
+     * 读取本地缩略图并按需采样（避免 OOM）。文件不存在 / 不可读返回 null（走占位样式）。
+     */
+    private fun loadThumbnail(filePath: String, targetPx: Int): Bitmap? = runCatching {
+        val f = File(filePath)
+        if (!f.exists() || !f.canRead()) return null
+
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(filePath, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+
+        var sample = 1
+        val minSide = minOf(bounds.outWidth, bounds.outHeight)
+        while (minSide / (sample * 2) >= targetPx) sample *= 2
+
+        BitmapFactory.decodeFile(
+            filePath,
+            BitmapFactory.Options().apply {
+                inSampleSize = sample
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            },
+        )
+    }.getOrNull()
 }

@@ -1,5 +1,8 @@
 package org.kori.plugin.geo.map
 
+import android.graphics.RectF
+import android.util.Log
+
 import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
@@ -45,6 +48,7 @@ import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.geometry.LatLngBounds
 import org.maplibre.android.location.LocationComponentActivationOptions
 import org.maplibre.android.location.LocationComponentOptions
 import org.maplibre.android.location.modes.CameraMode
@@ -73,11 +77,13 @@ import org.kori.plugin.geo.track.TrackMapCallbacks
 import org.kori.plugin.geo.track.di.TrackMediaRecord
 import org.kori.plugin.geo.track.di.TrackPoint
 import org.kori.plugin.geo.track.TrackRecordingEngine
+import org.kori.plugin.geo.track.ui.TrackMediaTapHost
 import org.kori.plugin.geo.track.ui.TrackRecordingHud
 import org.kori.plugin.geo.track.di.TrackServiceState
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+
 // =============================================================================================
 // 常量
 // =============================================================================================
@@ -91,7 +97,7 @@ private const val BASE_MAP_TERRAIN = "terrain"
 private const val OVERLAY_CONTOUR = "contour"
 
 // =============================================================================================
-// 相机位置记忆：跨配置变化（折叠/展开/旋转）保留，避免 Activity 重建后跳回初始中心
+// 相机位置记忆
 // =============================================================================================
 
 private object MapCameraMemory {
@@ -134,36 +140,48 @@ private object CameraSmoothing {
 }
 
 // =============================================================================================
+// 外部相机命令
+// =============================================================================================
+
+/**
+ * 外部驱动地图相机的命令（独立于跟随管线）。
+ *
+ *  · [FitPoints]    缩放到包含所有点的范围，进入"概览保持"状态
+ *  · [ResumeFollow] 解除概览保持，恢复对外部 fix 的跟随
+ */
+sealed interface MapCameraCommand {
+
+    /**
+     * 缩放到包含所有点的范围。
+     *
+     * @param points      参与 fitBounds 的点集（≥2 才生效）
+     * @param paddingPx   四边内边距（像素），值越大缩得越远
+     * @param animateMs   动画时长（毫秒），0 = 立即定位
+     */
+    data class FitPoints(
+        val points: List<TrackPoint>,
+        val paddingPx: Int = 120,
+        val animateMs: Int = 600,
+    ) : MapCameraCommand
+
+    /** 解除概览保持，恢复跟随（下一帧从当前位置平滑接管）。 */
+    data object ResumeFollow : MapCameraCommand
+}
+
+// =============================================================================================
 // 主 Composable
 // =============================================================================================
 
 /**
  * MapLibre 地图 Compose 封装。
  *
- * ## 位置源（三种，优先级从高到低）
+ * ## 实时轨迹 / 媒体点位
  *
- *  1. [externalLocationFixes]：外部的 `SharedFlow<Fix>`（Engine 单例模式）
- *  2. [externalLocationTracker]：外部持有的 `LocationTracker` 实例
- *  3. 内部创建：默认
- *
- * ## 实时轨迹
- *
- * 通过 [liveTrackPoints] / [liveSmoothPoints] / [liveTrackMedia] 三个参数绘制，
- * 使用 [LiveTrackLayer] 在样式加载时自动注册图层。
- *
- * ## 记录面板（可选）
- *
- * 传入 [trackPanelCallbacks] 后，地图会在 [TrackRecordingEngine] 的 `recording=true`
- * 时**自动叠加** [TrackRecordingPanel]，记录结束时自动隐藏。
- *
- * 不传 `trackPanelCallbacks`（默认 null）→ 纯地图，零开销。
- *
- * ## Bug 修复
- *
- *  · B6：相机 ticker 里实时读 `map.cameraPosition.tilt`
- *  · B7：四态循环初始状态与 `config.showUserLocation` 同步——
- *        默认开启定位时按钮已激活，循环计数必须从状态 1（跟随）开始，
- *        否则第一次点击会走错分支（跳过"回正北"直接关定位）
+ *  - [liveTrackPoints] / [liveSmoothPoints]：原始 / 平滑轨迹线
+ *  - [liveTrackMedia]：媒体点位（录音 / 录像为 MAP_PIN 图标针，照片为照片气泡针）
+ *  - [mediaScales]：`filePath -> scale`，控制每个媒体图标的显示比例。
+ *    空 map = 全部按 1 显示；回放场景每帧传入新 map 可实现"到点弹出"动画。
+ *  - [cameraCommands]：外部相机命令（概览 / 恢复跟随），回放屏常用。
  */
 @Composable
 fun MapLibreMapView(
@@ -175,22 +193,15 @@ fun MapLibreMapView(
     onContourChange: ((Boolean) -> Unit)? = null,
     onLocationFix: ((LocationTracker.Fix) -> Unit)? = null,
 
-    /**
-     * 地图单击回调（★ 不消费点击事件）。
-     *
-     *  · 返回点击点的经纬度 [LatLng] 与屏幕位置 [DpOffset]（相对 MapView 左上角，dp 单位）
-     *  · 内部监听器**永远返回 false**，事件继续传递给 MapLibre 的图层/标注点击链路，
-     *    不影响 `queryRenderedFeatures` 等图层点击功能
-     *  · 典型用法：发送广播通知其它界面处理
-     */
     onMapClick: ((position: LatLng, screenPosition: DpOffset) -> Unit)? = null,
-
     /**
-     * 定位按钮**长按**回调（可选）。
+     * ★ 媒体标记点击：`type`（PHOTO/VIDEO/AUDIO）+ 绝对 [filePath]。
+     * 命中媒体图标时消费点击（不透传给 [onMapClick]）。
+     * photo/video 全屏查看，audio 就地播放。
      *
-     * 典型用法：弹出卫星状态屏（见 [org.kori.plugin.geo.map.SatelliteStatusScreen]）。
-     * null = 长按无附加功能。短按行为（四态循环）不受影响。
+     * 为 null（默认）时使用内置宿主自动处理，所有调用场景零接线。
      */
+    onMediaClick: ((type: String, filePath: String) -> Unit)? = null,
     onLocationButtonLongClick: (() -> Unit)? = null,
     trackRecording: Boolean = false,
     onTrackSaved: ((File) -> Unit)? = null,
@@ -202,19 +213,33 @@ fun MapLibreMapView(
     liveTrackMedia: List<TrackMediaRecord> = emptyList(),
 
     /**
-     * 历史轨迹叠加层（历史浏览）。
+     * ★ 媒体点位显示比例：`filePath -> scale`（0 隐藏，1 完全显示，中间值动画）。
      *
-     * 每个元素为一条轨迹点序列（通常一个会话一条），以灰色线绘制在实时轨迹之下。
-     * 传空列表 = 清除叠加层。由 [TrackRecordingEngine.loadHistoryOnMap] 驱动。
+     * 空 map = 所有媒体均按 scale=1 显示。
+     * 回放循环每帧传入新 map，feature 上的 `scale` 属性随之更新，
+     * SymbolLayer 的 `iconSize` 表达式驱动图标缩放。
+     */
+    mediaScales: Map<String, Float> = emptyMap(),
+
+    /**
+     * 历史轨迹叠加层（每元素一条轨迹段，≥2 点才绘制）。
      */
     historySegments: List<List<TrackPoint>> = emptyList(),
 
     /**
-     * 轨迹回放标记点：非 null 时地图显示亮青色回放标记（配合 [org.kori.plugin.geo.track.TrackPlaybackBar]）。
+     * 轨迹回放标记点：非 null 时地图显示亮青回放标记。
      */
     playbackPoint: TrackPoint? = null,
 
-    // ★ 新增：记录面板回调。非 null 时启用内嵌记录面板。
+    /**
+     * ★ 外部相机命令流（可选）。
+     *
+     * 典型场景：轨迹回放屏进入时先 [MapCameraCommand.FitPoints] 显示整条轨迹，
+     * 用户点播放后再 [MapCameraCommand.ResumeFollow] 进入跟随。
+     */
+    cameraCommands: SharedFlow<MapCameraCommand>? = null,
+
+    // ★ 记录面板回调。非 null 时启用内嵌记录面板。
     trackPanelCallbacks: TrackMapCallbacks? = null,
 ) {
     val context = LocalContext.current
@@ -312,15 +337,7 @@ fun MapLibreMapView(
     var customFollow by remember { mutableStateOf(config.showUserLocation) }
     var customCollectJob by remember { mutableStateOf<Job?>(null) }
 
-    // =========================================================================================
-    // ★ 定位按钮四态循环（自定义管线）
-    // =========================================================================================
-    /**
-     * 相机朝向模式：定位按钮循环驱动。
-     *
-     * ★ B7 修复：初始值与 `config.showUserLocation` / `config.customLocationRotateToBearing`
-     * 同步——地图默认开启定位时，朝向模式即进入"跟随"而非停留在 NORTH。
-     */
+    // 四态循环
     var bearingMode by remember {
         mutableStateOf(
             if (config.showUserLocation && config.customLocationRotateToBearing) {
@@ -330,33 +347,24 @@ fun MapLibreMapView(
             },
         )
     }
-
-    /**
-     * 循环主状态：0=关闭 1=跟随朝北 2=罗盘模式。
-     *
-     * ★ B7 修复：默认开启定位时从状态 1 开始，与 [locationEnabled] / [customFollow]
-     * 保持一致——否则按钮视觉已激活，第一次点击却跳过"回正北"分支。
-     */
     var locateCycleState by remember { mutableIntStateOf(if (config.showUserLocation) 1 else 0) }
-
-    /** 状态 1 内部子标记：区分"刚进入"与"已点过恢复朝北"，决定下次点击是否进罗盘。 */
     var northResetDone by remember { mutableStateOf(false) }
 
-    /** 罗盘朝向数据源（仅 COMPASS 模式运行，省传感器耗电）。 */
     val compass = remember { CompassProvider(context) }
-
-    /** 罗盘模式下定位按钮箭头图标的旋转角（= 手机朝向，每帧更新）。 */
     var compassIconDeg by remember { mutableFloatStateOf(0f) }
 
-    // 罗盘随模式启停
     LaunchedEffect(bearingMode) {
         if (bearingMode == BearingMode.COMPASS) compass.start() else compass.stop()
     }
 
-    // onMapClick 的 holder：getMapAsync 闭包只注册一次监听器，
-    // 通过 holder 读取"当前"回调，避免捕获到旧的 lambda 引用
     val onMapClickHolder = remember { arrayOfNulls<((LatLng, DpOffset) -> Unit)?>(1) }
     onMapClickHolder[0] = onMapClick
+
+    // ★ 内置媒体点击宿主：host 未传 onMediaClick 时自动处理
+    //   （照片/视频全屏查看，录音就地播放）——录制 / 回放 / 历史浏览零接线
+    val builtInMediaTap = TrackMediaTapHost()
+    val onMediaClickHolder = remember { arrayOfNulls<((String, String) -> Unit)?>(1) }
+    onMediaClickHolder[0] = onMediaClick ?: builtInMediaTap
     val lastFixHolder = remember { arrayOfNulls<LocationTracker.Fix>(1) }
 
     val trackDir = remember {
@@ -373,6 +381,12 @@ fun MapLibreMapView(
     }
     val camNeedsSeed = remember { booleanArrayOf(true) }
     val camHasTarget = remember { booleanArrayOf(false) }
+
+    /**
+     * 概览保持：外部请求 [MapCameraCommand.FitPoints] 后置 true。
+     * 为 true 时相机缓动 ticker 停止写相机，fix 也不更新 camTarget。
+     */
+    val overviewHold = remember { mutableStateOf(false) }
 
     // =============================================================================================
     // 相机缓动 ticker
@@ -403,7 +417,8 @@ fun MapLibreMapView(
             lastNanos = nowNanos
 
             val nowMs = nowNanos / 1_000_000L
-            val hasWork = customFollow && camHasTarget[0]
+            // ★ 概览保持期间不抢相机
+            val hasWork = customFollow && camHasTarget[0] && !overviewHold.value
 
             if (!hasWork) {
                 if (idleSinceMs == 0L) idleSinceMs = nowMs
@@ -435,27 +450,21 @@ fun MapLibreMapView(
 
             when (bearingMode) {
                 BearingMode.GPS_BEARING -> {
-                    // 转向模式：相机朝向缓动到运动方位角（导航风格）
                     val dB = ((camTarget[2] - camCurrent[2] + 540.0) % 360.0) - 180.0
                     camCurrent[2] = (camCurrent[2] + dB * kBrg + 360.0) % 360.0
                 }
                 BearingMode.COMPASS -> {
-                    // 罗盘模式：地图缓动到手机顶部朝向（最短角路径，跨 0/360 不绕远）
                     val target = compass.headingDeg.toDouble()
                     compassIconDeg = compass.headingDeg
                     val dB = ((target - camCurrent[2] + 540.0) % 360.0) - 180.0
                     camCurrent[2] = (camCurrent[2] + dB * kBrg + 360.0) % 360.0
                 }
                 BearingMode.NORTH -> {
-                    // 朝北但不强制：每帧采纳相机当前 bearing（与 tilt 同理）。
-                    // 初始为 0（朝北）；用户手势旋转地图后保持用户角度，不纠正回北。
                     camCurrent[2] = map.cameraPosition.bearing
                 }
             }
 
             camCurrent[3] += (config.customLocationTrackingZoom - camCurrent[3]) * kZoom
-
-            // B6 修复：实时读取用户的倾斜
             camCurrent[4] = map.cameraPosition.tilt
 
             val dLat = abs(camCurrent[0] - camLastWrite[0])
@@ -517,7 +526,7 @@ fun MapLibreMapView(
             }
             runCatching { mapRef?.let { safeDeactivateLocation(it) } }
             compass.stop()
-            mapRef?.let { MapCameraMemory.snapshot(it) }   // ★ 先记住相机，再销毁
+            mapRef?.let { MapCameraMemory.snapshot(it) }
             mapView.onStop()
             mapView.onDestroy()
             MapRuntime.detach()
@@ -531,37 +540,45 @@ fun MapLibreMapView(
         mapView.getMapAsync { map ->
             mapRef = map
             map.uiSettings.apply {
-                // 1. 隐藏 MapLibre logo 与归因按钮
                 isLogoEnabled = false
                 isAttributionEnabled = false
-
-                // 2. 指北针位置：默认在左上角，移到右上角（可调 gravity 和边距）
                 compassGravity = android.view.Gravity.TOP or android.view.Gravity.END
                 val m = (16 * context.resources.displayMetrics.density).toInt()
                 val statusBar = (24 * context.resources.displayMetrics.density).toInt()
                 val extra48 = (84 * context.resources.displayMetrics.density).toInt()
-                // ★ 上边距 = 16(基础) + 24(状态栏) + 48(额外下移)
                 setCompassMargins(m, m + statusBar + extra48, m, m)
             }
-            // =================================================================================
-            // ★ 地图单击 → 广播/回调（不消费事件，图层点击照常工作）
-            // =================================================================================
-            // 关键：onMapClick 必须返回 Boolean——
-            //   true  = 消费事件，后续注册的监听器（图层/标注点击）收不到
-            //   false = 继续传递，不影响任何已有点击功能
-            // 这里永远返回 false，只做"通知"。
             map.addOnMapClickListener { point ->
-                onMapClickHolder[0]?.let { cb ->
-                    // LatLng → 屏幕像素（相对 MapView 左上角）
+                // ★ 媒体标记优先：以点击点为中心 ±28dp 的方框查询，扩大命中区域
+                //   （针尖图标像素很小，精确点按很容易miss）
+                val mediaHandler = onMediaClickHolder[0]
+                if (mediaHandler != null) {
                     val screenPt = map.projection.toScreenLocation(point)
-                    // 像素 → dp
+                    val density = context.resources.displayMetrics.density
+                    val half = 28f * density
+                    val hit = map.queryRenderedFeatures(
+                        RectF(
+                            screenPt.x - half, screenPt.y - half,
+                            screenPt.x + half, screenPt.y + half,
+                        ),
+                        LiveTrackLayer.LAYER_MEDIA,
+                    ).firstOrNull()
+                    if (hit != null) {
+                        val type = hit.getStringProperty("type")
+                        val path = hit.getStringProperty("filePath")
+                        if (type != null && path != null) {
+                            Log.i("MapLibreMapView", "media hit: type=$type")
+                            mediaHandler(type, path)
+                            return@addOnMapClickListener true
+                        }
+                    }
+                }
+                onMapClickHolder[0]?.let { cb ->
+                    val screenPt = map.projection.toScreenLocation(point)
                     val density = context.resources.displayMetrics.density
                     cb(
                         point,
-                        DpOffset(
-                            Dp(screenPt.x / density),
-                            Dp(screenPt.y / density),
-                        ),
+                        DpOffset(Dp(screenPt.x / density), Dp(screenPt.y / density)),
                     )
                 }
                 false
@@ -603,7 +620,6 @@ fun MapLibreMapView(
                     LatLng(config.initialCenterLat, config.initialCenterLng)
                 }
 
-                // ★ 折叠/展开等配置变化重建后，优先恢复到销毁前的相机位置
                 val mem = MapCameraMemory
                 map.cameraPosition = CameraPosition.Builder()
                     .target(
@@ -629,10 +645,10 @@ fun MapLibreMapView(
 
                 availableLayers = collectSwitchableLayers(style)
 
-                // 实时轨迹图层
+                // 实时轨迹图层（含媒体 SymbolLayer）
                 LiveTrackLayer.ensureLayers(style)
 
-                MapRuntime.attach(style, map,mapView)
+                MapRuntime.attach(style, map, mapView)
             }
         }
     }
@@ -677,20 +693,57 @@ fun MapLibreMapView(
         }
     }
 
-    LaunchedEffect(styleRef, liveTrackMedia) {
+    // =============================================================================================
+    // 媒体点位绘制（SymbolLayer；支持按 mediaScales 数据驱动缩放）
+    // =============================================================================================
+    // key 中加入 mediaScales：回放循环每帧写入新 map → 重新写 GeoJSON，
+    // feature 上的 scale 属性随之变化，SymbolLayer iconSize 表达式立即生效。
+    // ★ 历史浏览场景：host 未显式传媒体（或传的是空的 liveMedia）时，
+    //   回退到引擎的 historyMedia 流，保证"显示到地图"时媒体标记一定出现
+    val historyMedia by TrackRecordingEngine.historyMedia.collectAsState()
+
+    LaunchedEffect(styleRef, liveTrackMedia, historyMedia, mediaScales) {
         val style = styleRef ?: return@LaunchedEffect
-        LiveTrackLayer.updateMedia(style, liveTrackMedia)
+        val effectiveMedia = liveTrackMedia.ifEmpty { historyMedia }
+        Log.i(
+            "MapLibreMapView",
+            "updateMedia effect: live=${liveTrackMedia.size}, history=${historyMedia.size}",
+        )
+        LiveTrackLayer.updateMedia(
+            style = style,
+            context = context.applicationContext,
+            media = effectiveMedia,
+            scales = mediaScales,
+        )
     }
 
     // =============================================================================================
-    // 历史轨迹叠加层
+    // 历史轨迹叠加层（加载时自动缩放至轨迹范围）
     // =============================================================================================
-    LaunchedEffect(styleRef, historySegments) {
+    LaunchedEffect(styleRef, mapRef, historySegments) {
         val style = styleRef ?: return@LaunchedEffect
+        val map = mapRef ?: return@LaunchedEffect
         if (historySegments.isEmpty()) {
             LiveTrackLayer.clearHistory(style)
         } else {
             LiveTrackLayer.updateHistory(style, historySegments)
+
+            // ★ 浏览历史轨迹：缩放至轨迹范围（所有段的所有点参与 fitBounds）
+            val all = historySegments.flatten()
+            if (all.size >= 2) {
+                // 暂停跟随管线的相机写入，避免 fitBounds 动画与跟随互相拉扯；
+                // 用户点定位按钮重新跟随时解除（见 locationFabOnClick）
+                overviewHold.value = true
+
+                val builder = LatLngBounds.Builder()
+                all.forEach { builder.include(LatLng(it.lat, it.lng)) }
+                runCatching {
+                    map.animateCamera(
+                        CameraUpdateFactory.newLatLngBounds(builder.build(), 120),
+                        700,
+                    )
+                }
+            }
         }
     }
 
@@ -700,6 +753,47 @@ fun MapLibreMapView(
     LaunchedEffect(styleRef, playbackPoint) {
         val style = styleRef ?: return@LaunchedEffect
         LiveTrackLayer.updatePlayback(style, playbackPoint)
+    }
+
+    // =============================================================================================
+    // 外部相机命令（概览 / 恢复跟随）
+    // =============================================================================================
+    LaunchedEffect(mapRef, cameraCommands) {
+        val map = mapRef ?: return@LaunchedEffect
+        val flow = cameraCommands ?: return@LaunchedEffect
+
+        flow.collect { cmd ->
+            when (cmd) {
+                is MapCameraCommand.FitPoints -> {
+                    if (cmd.points.size < 2) return@collect
+                    // 进入概览保持：ticker 停手、fix 不抢相机
+                    overviewHold.value = true
+
+                    val builder = LatLngBounds.Builder()
+                    cmd.points.forEach { builder.include(LatLng(it.lat, it.lng)) }
+                    runCatching {
+                        val update = CameraUpdateFactory.newLatLngBounds(
+                            builder.build(),
+                            cmd.paddingPx,
+                        )
+                        if (cmd.animateMs > 0) {
+                            map.animateCamera(update, cmd.animateMs)
+                        } else {
+                            map.moveCamera(update)
+                        }
+                    }
+                }
+
+                MapCameraCommand.ResumeFollow -> {
+                    overviewHold.value = false
+                    // 让 ticker 从当前位置平滑接管：
+                    // 重新播种 → 下一帧从 map.cameraPosition 起缓动到跟随目标
+                    camNeedsSeed[0] = true
+                    // 标记暂无可用目标，等下一个 fix 建立
+                    camHasTarget[0] = false
+                }
+            }
+        }
     }
 
     // =============================================================================================
@@ -758,7 +852,6 @@ fun MapLibreMapView(
             customFollow = false
             camNeedsSeed[0] = true
             camHasTarget[0] = false
-            // ★ 同步关闭定位蓝点（若已激活）
             mapRef?.let { safeEnableLocation(it, false) }
             return@LaunchedEffect
         }
@@ -776,11 +869,6 @@ fun MapLibreMapView(
         val styleNow = styleRef ?: return@LaunchedEffect
         val map = mapRef ?: return@LaunchedEffect
 
-        // ★ 自定义管线下也要渲染定位蓝点。
-        // 激活 LocationComponent 但 useDefaultLocationEngine(false)——不用它的 GPS 引擎；
-        // cameraMode = NONE——相机由上方缓动 ticker 驱动；
-        // 位置在 collect 里通过 forceLocationUpdate() 喂入（见 pushFixToLocationComponent）。
-        // 这样蓝点显示的是滤波后的位置，与相机/轨迹完全一致，且不会双重定位耗电。
         runCatching {
             val lc = map.locationComponent
             if (!lc.isLocationComponentActivated) {
@@ -806,24 +894,22 @@ fun MapLibreMapView(
         customCollectJob?.cancel()
 
         if (externalLocationFixes != null) {
-            // ★ 默认打开用户定位：通知引擎幂等启动共享 tracker。
-            // 未录制时 fix 也持续流动（蓝点/相机即开即有），
-            // 录制开始后由同一 tracker 供数，避免 GPS 冷启动变慢。
             TrackRecordingEngine.ensureLocationTracking(context)
 
             customCollectJob = scope.launch {
                 externalLocationFixes.collect { fix ->
                     lastFixHolder[0] = fix
                     onLocationFix?.invoke(fix)
-
-                    // ★ 把滤波后的 fix 喂给 LocationComponent 画蓝点
                     pushFixToLocationComponent(map, fix)
 
-                    camTarget[0] = fix.lat
-                    camTarget[1] = fix.lng
-                    fix.bearingDeg?.let { camTarget[2] = it.toDouble() }
-                    camTarget[3] = config.customLocationTrackingZoom
-                    camHasTarget[0] = true
+                    // ★ 概览保持期间不更新相机目标
+                    if (!overviewHold.value) {
+                        camTarget[0] = fix.lat
+                        camTarget[1] = fix.lng
+                        fix.bearingDeg?.let { camTarget[2] = it.toDouble() }
+                        camTarget[3] = config.customLocationTrackingZoom
+                        camHasTarget[0] = true
+                    }
                 }
             }
             return@LaunchedEffect
@@ -834,8 +920,6 @@ fun MapLibreMapView(
             tracker.fixes.collect { fix ->
                 lastFixHolder[0] = fix
                 onLocationFix?.invoke(fix)
-
-                // ★ 把滤波后的 fix 喂给 LocationComponent 画蓝点
                 pushFixToLocationComponent(map, fix)
 
                 if (tracker.isRecording) {
@@ -845,17 +929,20 @@ fun MapLibreMapView(
                     )
                 }
 
-                camTarget[0] = fix.lat
-                camTarget[1] = fix.lng
-                fix.bearingDeg?.let { camTarget[2] = it.toDouble() }
-                camTarget[3] = config.customLocationTrackingZoom
-                camHasTarget[0] = true
+                // ★ 概览保持期间不更新相机目标
+                if (!overviewHold.value) {
+                    camTarget[0] = fix.lat
+                    camTarget[1] = fix.lng
+                    fix.bearingDeg?.let { camTarget[2] = it.toDouble() }
+                    camTarget[3] = config.customLocationTrackingZoom
+                    camHasTarget[0] = true
+                }
             }
         }
     }
 
     // =============================================================================================
-    // 轨迹记录（ViewModel 内嵌模式）
+    // 轨迹记录
     // =============================================================================================
     LaunchedEffect(config.useCustomLocationPipeline, trackRecording, locationEnabled) {
         if (!config.useCustomLocationPipeline) return@LaunchedEffect
@@ -882,21 +969,13 @@ fun MapLibreMapView(
             modifier = Modifier.matchParentSize(),
         )
 
-        // ★ 定位按钮点击逻辑（四态循环 / 默认管线分流），由 LocationFab 组件分发
         val locationFabOnClick: () -> Unit = {
             if (config.useCustomLocationPipeline) {
-                // ★★ 定位按钮四态循环 ★★
-                //  第 1 次（关闭中）：打开定位 + 跟随 + 朝北
-                //  第 2 次（跟随中）：地图吸附回正北（保持跟随）
-                //  第 3 次（跟随中）：罗盘模式——地图随手机朝向旋转
-                //  第 4 次（罗盘中）：关闭定位，恢复朝北，回到第 1 态
-                // 支线：用户平移地图后点击 = 恢复跟随（保持当前朝向模式，
-                //       不打乱循环计数）
-                // 初始态：config.showUserLocation=true 时从状态 1 开始（B7 修复）
                 when {
                     !locationEnabled -> {
                         locationEnabled = true
                         onUserLocationChange?.invoke(true)
+                        overviewHold.value = false // ★ 解除历史浏览的概览保持，恢复跟随
                         customFollow = true
                         camNeedsSeed[0] = true
                         bearingMode = if (config.customLocationRotateToBearing) {
@@ -915,8 +994,8 @@ fun MapLibreMapView(
                         }
                     }
                     !customFollow -> {
-                        // 平移后恢复跟随，保持当前朝向模式
                         customFollow = true
+                        overviewHold.value = false // ★ 解除历史浏览的概览保持，恢复跟随
                         camNeedsSeed[0] = true
                         lastFixHolder[0]?.let { fix ->
                             camTarget[0] = fix.lat
@@ -926,7 +1005,6 @@ fun MapLibreMapView(
                         }
                     }
                     locateCycleState == 2 -> {
-                        // 第 4 次点击：关闭定位，恢复朝北
                         bearingMode = BearingMode.NORTH
                         locateCycleState = 0
                         northResetDone = false
@@ -940,7 +1018,6 @@ fun MapLibreMapView(
                         customFollow = false
                     }
                     !northResetDone -> {
-                        // 第 2 次点击：地图吸附回正北（保持跟随）
                         bearingMode = BearingMode.NORTH
                         northResetDone = true
                         camCurrent[2] = 0.0
@@ -950,7 +1027,6 @@ fun MapLibreMapView(
                         }
                     }
                     else -> {
-                        // 第 3 次点击：罗盘模式
                         bearingMode = BearingMode.COMPASS
                         locateCycleState = 2
                     }
@@ -965,7 +1041,6 @@ fun MapLibreMapView(
             }
         }
 
-        // ★ 定位按钮（独立组件：单击四态循环 + 长按卫星状态）
         if (config.showLocationButton) {
             LocationFab(
                 locationEnabled = locationEnabled,
@@ -982,7 +1057,6 @@ fun MapLibreMapView(
             )
         }
 
-        // 图层控制
         if (config.showLayerButton) {
             val baseMapOptions = remember {
                 listOf(
@@ -1056,7 +1130,6 @@ fun MapLibreMapView(
             )
         }
 
-        // ★ 记录面板（可选）——仅 callbacks 非 null 时启用
         if (trackPanelCallbacks != null) {
             RecordingPanelOverlay(
                 callbacks = trackPanelCallbacks,
@@ -1065,7 +1138,6 @@ fun MapLibreMapView(
                     .padding(
                         start = 12.dp,
                         end = 12.dp,
-                        // ★ 可被宿主底部导航栏遮挡：通过 config.trackPanelBottomPadding 抬高
                         bottom = config.trackPanelBottomPadding,
                     ),
             )
@@ -1074,30 +1146,16 @@ fun MapLibreMapView(
 }
 
 // =============================================================================================
-// ★ 记录面板覆盖层（内部 Composable）
+// 记录面板覆盖层
 // =============================================================================================
 
-/**
- * 记录面板覆盖层。
- *
- * 订阅 [TrackRecordingEngine.state]，仅在 `recording = true` 时渲染
- * [TrackRecordingPanel]。停止记录后自动消失。
- *
- * ## 为什么是独立 Composable？
- *
- *  · `collectAsState()` 需要在稳定的 Composable 里调用
- *  · 只有 [MapLibreMapView] 收到 `trackPanelCallbacks != null` 时才创建此 Composable
- *  · `callbacks == null` 时不订阅 Engine，零开销
- */
 @Composable
 private fun RecordingPanelOverlay(
     callbacks: TrackMapCallbacks,
     modifier: Modifier = Modifier,
 ) {
     val state by TrackRecordingEngine.state.collectAsState()
-    // ★ 默认不显示 HUD；收到开启录制命令（recording=true）后才出现
     if (!state.recording) return
-    // ★ 沉浸式 HUD（与地图融合的玻璃拟态悬浮界面）
     TrackRecordingHud(
         state = TrackServiceState(
             recording = state.recording,
@@ -1112,7 +1170,7 @@ private fun RecordingPanelOverlay(
         ),
         callbacks = callbacks,
         modifier = modifier,
-        showToggleButton = false,   // ★ HUD 内不显示结束按钮，结束走宿主 PUBLISH
+        showToggleButton = false,
     )
 }
 
@@ -1158,12 +1216,6 @@ private fun handleDefaultLocationButton(
     }
 }
 
-/**
- * 把自定义管线过滤后的 [fix] 推给 MapLibre LocationComponent，驱动定位蓝点。
- *
- * 前提：LocationComponent 已激活且 enabled（见自定义管线 LaunchedEffect 中的激活逻辑），
- * 否则静默跳过。蓝点因此显示的是滤波后的位置，与相机/轨迹完全一致。
- */
 @SuppressLint("MissingPermission")
 private fun pushFixToLocationComponent(map: MapLibreMap, fix: LocationTracker.Fix) {
     val lc = map.locationComponent

@@ -820,9 +820,14 @@ object FeatureAttrSheet {
     // 全屏浏览
     // =============================================================================================
 
+    /**
+     * ★ 公开给外部复用（如轨迹媒体标记点击）：图片缩放浏览 + 视频播放（进度/静音/旋转）。
+     *
+     * 本地文件直接传绝对路径即可——[VideoCache] 发现本地已存在不会走网络下载。
+     */
     @OptIn(ExperimentalFoundationApi::class)
     @Composable
-    private fun FullscreenViewer(
+    fun FullscreenViewer(
         attachments: List<Attachment>,
         initialPage: Int,
         onClose: () -> Unit,

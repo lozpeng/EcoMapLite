@@ -85,6 +85,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * 轨迹时间线界面 v8 —— 左轴分段 + 右侧信息卡。
@@ -834,7 +835,7 @@ private fun AudioPlayerBar(file: File?, accent: Color) {
     LaunchedEffect(playing) {
         while (playing) {
             posMs = runCatching { player.currentPosition.toLong() }.getOrDefault(0L)
-            delay(200)
+            delay(200.milliseconds)
         }
     }
 
