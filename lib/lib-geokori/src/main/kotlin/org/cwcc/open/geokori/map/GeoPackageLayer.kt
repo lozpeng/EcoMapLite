@@ -332,7 +332,7 @@ class GeoPackageLayer(
     // 生命周期 / 点击
     // =========================================================================================
 
-    override fun onMapReady(map: MapLibreMap) {
+    override fun onMapReadyInternal(map: MapLibreMap) {
         registerListeners(map)
         mountSheetHost()
         if (isLoaded) applyLayerVisibility()

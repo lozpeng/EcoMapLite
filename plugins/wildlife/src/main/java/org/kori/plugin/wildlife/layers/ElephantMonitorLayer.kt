@@ -332,8 +332,7 @@ class ElephantMonitorLayer : BaseBizeLibreLayer() {
     // =========================================================================================
     // 生命周期 / 监听器 / 点击
     // =========================================================================================
-
-    override fun onMapReady(map: MapLibreMap) {
+    override fun onMapReadyInternal(map: MapLibreMap) {
         registerIcons(map)
         registerListeners(map)
         mountSheetHost()

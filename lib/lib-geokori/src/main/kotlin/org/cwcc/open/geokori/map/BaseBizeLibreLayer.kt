@@ -1,9 +1,20 @@
 package org.cwcc.open.geokori.map
 
-
 import android.content.Context
 import android.graphics.Color
+import android.view.ViewGroup
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.platform.ViewCompositionStrategy
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONObject
+import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.FillLayer
@@ -39,6 +50,7 @@ import org.maplibre.android.style.layers.PropertyFactory.textHaloWidth
 import org.maplibre.android.style.layers.PropertyFactory.textOffset
 import org.maplibre.android.style.layers.PropertyFactory.textSize
 import org.maplibre.android.style.layers.SymbolLayer
+import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
 import java.io.File
 import java.net.HttpURLConnection
@@ -53,22 +65,31 @@ import java.net.URL
  *  · 透明度 —— 控制面板透明度滑杆；基类记账 [mAlpha]，子类覆盖
  *    [onAlphaChanged] 对具体 style layer 调 opacity 属性
  *
- * 已托管的通用能力，具体图层只需实现 4 个抽象点：
- *  · [cacheDataFile] / [cacheMetaFile]  本地缓存文件名
- *  · [fetchRemoteGeoJson]               全量 GeoJSON 拉取（IO 线程）
- *  · [onCollectionLoaded]               数据就绪后建图层（主线程）
- *  · 可选 [fetchSummaryCount]           轻量统计条数，用于"总次数未变则免全量"
- *
- * 通用能力清单：
+ * 已托管的通用能力：
  *  · 数据管道 [loadCollection]：本地缓存(1周默认) → summary 条数校验 → 全量拉取 →
  *    失败降级旧缓存；成功自动 notifyLoaded，失败自动 notifyFailed（launchLoad 模板）
  *  · 磁盘缓存读写/删除、[httpGet] 请求助手
  *  · 显隐状态（[setVisible]/[isVisible]/[applyLayerVisibility] 钩子）
  *  · [refresh]（RefreshableLayer）：清缓存强制重拉
- *  · 图层构建助手：heatmap/circle/symbol/fill/line（Fill/Line 上的
- *    非法 text 属性已移除，注记请用 symbolLayer）
+ *  · 图层构建助手：heatmap/circle/symbol/fill/line
+ *  · ★ 默认属性弹窗：点击要素 → [FeatureAttrSheet] 展示属性（零配置，见下）
  *
- * 生命周期默认实现：onAttach 自动 [loadCollection]，onDetach 自动 [onClearMapObjects]。
+ * 默认属性弹窗（★★ 关键能力）：
+ *  · 想让点击自动弹属性面板，只需覆盖 [clickableLayerIds] 返回参与查询的 layer id 列表；
+ *  · 基类会在 [onMapReady] 里：
+ *      1) 注册 OnMapClickListener → [onMapClick] → 命中要素写入 [_pickedFeature]；
+ *      2) 在 mapView 上挂载一个 ComposeView，渲染 [FeatureAttrSheet.Content]；
+ *      3) 点击要素 → 弹出表格式属性面板（UI 与 IllegalEventAttrSheet 一致）；
+ *  · 子类可覆盖 [attrConfig] 定制 Config（字段映射 / 附件 / 名称 / 位置 / 是否显示操作栏）；
+ *  · 子类可覆盖 [onMapClick] 完全自定义点击逻辑（返回 true = 消费）；
+ *  · 子类可覆盖 [onMapReadyInternal] 做地图就绪后的初始化（原 onMapReady 里的逻辑搬这里）；
+ *  · 子类若完全不想用默认能力（例如 IllegalEventsHeatLayer 用 IllegalEventAttrSheet），
+ *    保持 [clickableLayerIds] 为空即可，基类不会注册监听、不会挂载 ComposeView。
+ *
+ * 生命周期默认实现：
+ *  · onAttach 自动 [loadCollection]；
+ *  · onMapReady（final）自动装监听 + 装宿主 + 转发 [onMapReadyInternal]；
+ *  · onDetach 自动 [onClearMapObjects] + 清 pick 状态 + 卸载宿主。
  * 子类如需覆盖 onAttach/onDetach，务必调用 super。
  */
 abstract class BaseBizeLibreLayer : LibreMapLayer(), RefreshableLayer, VisibilityControllableLayer {
@@ -115,6 +136,82 @@ abstract class BaseBizeLibreLayer : LibreMapLayer(), RefreshableLayer, Visibilit
     protected open fun applyLayerVisibility() {}
 
     // =========================================================================================
+    // 默认属性弹窗（子类可覆盖）
+    // =========================================================================================
+
+    /**
+     * 参与点击查询的 style layer id 列表。
+     *  · 非空 → 基类自动启用默认属性弹窗（注册点击 + 挂载 FeatureAttrSheet）；
+     *  · 空（默认）→ 不启用默认弹窗，子类走自己的逻辑（如 IllegalEventsHeatLayer）。
+     *
+     * 查询顺序：按列表顺序 queryRenderedFeatures，第一个命中的 Feature 被采用。
+     */
+    protected open val clickableLayerIds: List<String> = emptyList()
+
+    /** 是否启用默认属性弹窗（默认由 [clickableLayerIds] 是否非空决定） */
+    protected open val defaultAttrSheetEnabled: Boolean
+        get() = clickableLayerIds.isNotEmpty()
+
+    /**
+     * 默认属性弹窗的 Config（子类可覆盖自定义）。
+     *
+     * 默认行为：
+     *  · fields：展开 Feature 全部属性；`__` 前缀（内部合成键）过滤掉；
+     *  · displayName / position：使用 [FeatureAttrSheet.Config] 的默认实现
+     *    （name 字段 / Point 几何）；
+     *  · attachments：空；
+     *  · showActions：true（有坐标时展示导航/分享）。
+     */
+    protected open fun attrConfig(feature: Feature): FeatureAttrSheet.Config =
+        FeatureAttrSheet.Config(fields = ::defaultFields)
+
+    /** 默认字段生成：全部属性，过滤 `__` 前缀 */
+    protected open fun defaultFields(feature: Feature): List<Pair<String, String>> =
+        feature.properties()?.asJsonObject?.entrySet()
+            ?.filter { !it.key.startsWith("__") }
+            ?.map { e ->
+                val v = e.value?.let { if (it.isJsonNull) "" else it.asString } ?: ""
+                e.key to v
+            }
+            ?: emptyList()
+
+    /**
+     * 点击处理入口（基类注册的 OnMapClickListener 会转发到这里）。
+     * 返回 true = 事件被消费（地图不再触发其他默认行为）。
+     *
+     * 默认实现：
+     *  · isActive / isLoaded / mVisible 全为 true 时；
+     *  · 用 [queryClickableFeature] 查询命中要素；
+     *  · 命中则写入 [_pickedFeature]，触发 [FeatureAttrSheet] 展示。
+     *
+     * 子类可覆盖完全自定义（例如调用自己的 AttrSheet 对象）。
+     */
+    protected open fun onMapClick(latLng: LatLng): Boolean {
+        if (!isActive || !isLoaded || !mVisible) return false
+        if (!defaultAttrSheetEnabled) return false
+        val m = map ?: return false
+        val feature = queryClickableFeature(m, latLng) ?: return false
+        _pickedFeature.value = feature
+        return true
+    }
+
+    /**
+     * 默认查询：按 [clickableLayerIds] 顺序 queryRenderedFeatures，取第一个命中。
+     * 子类可覆盖（例如跨多 source 反查、按 z 序合并等）。
+     */
+    protected open fun queryClickableFeature(map: MapLibreMap, latLng: LatLng): Feature? {
+        val screen = map.projection.toScreenLocation(latLng)
+        for (id in clickableLayerIds) {
+            map.queryRenderedFeatures(screen, id).firstOrNull()?.let { return it }
+        }
+        return null
+    }
+
+    /** 当前被点击要素的可观察状态（供子类做辅助逻辑，例如上报） */
+    private val _pickedFeature = MutableStateFlow<Feature?>(null)
+    protected val pickedFeature: StateFlow<Feature?> = _pickedFeature.asStateFlow()
+
+    // =========================================================================================
     // 状态
     // =========================================================================================
 
@@ -128,6 +225,13 @@ abstract class BaseBizeLibreLayer : LibreMapLayer(), RefreshableLayer, Visibilit
     @Volatile
     protected var mAlpha = 1f
 
+    /** 默认点击监听是否已安装（onMapReady 幂等守卫；onDetach 时重置） */
+    @Volatile
+    private var defaultClickListenerInstalled = false
+
+    /** 默认属性弹窗的 ComposeView 宿主 */
+    private var attrSheetHostView: ComposeView? = null
+
     // =========================================================================================
     // 生命周期默认实现
     // =========================================================================================
@@ -137,9 +241,85 @@ abstract class BaseBizeLibreLayer : LibreMapLayer(), RefreshableLayer, Visibilit
         loadCollection()
     }
 
+    /**
+     * ★ 模板方法（final）：基类在此安装默认能力，然后转发给 [onMapReadyInternal]。
+     * 子类若需在地图就绪后初始化，请覆盖 [onMapReadyInternal]，不要覆盖本方法。
+     */
+    protected final override fun onMapReady(map: MapLibreMap) {
+        if (defaultAttrSheetEnabled) {
+            installDefaultClickListener(map)
+            installAttrSheetHost()
+        }
+        onMapReadyInternal(map)
+    }
+
+    /**
+     * 子类实现：地图就绪后的自定义初始化（原 onMapReady 里的逻辑搬到这里）。
+     * 默认空。
+     */
+    protected open fun onMapReadyInternal(map: MapLibreMap) {}
+
     override fun onDetach() {
         onClearMapObjects()
         isLoaded = false
+        // 默认属性弹窗清理
+        defaultClickListenerInstalled = false
+        _pickedFeature.value = null
+        unmountAttrSheetHost()
+    }
+
+    // =========================================================================================
+    // 默认属性弹窗的安装与卸载
+    // =========================================================================================
+
+    private fun installDefaultClickListener(map: MapLibreMap) {
+        if (defaultClickListenerInstalled) return
+        defaultClickListenerInstalled = true
+        trackMapListener(
+            MapLibreMap.OnMapClickListener { latLng -> onMapClick(latLng) },
+            attach = { map.addOnMapClickListener(it) },
+            detach = { map.removeOnMapClickListener(it) },
+        )
+    }
+
+    private fun installAttrSheetHost() {
+        if (attrSheetHostView != null) return
+        val parent = MapRuntime.currentMapView ?: return
+        val view = ComposeView(parent.context).apply {
+            setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
+            setContent { AttrSheetHost() }
+        }
+        parent.addView(
+            view,
+            ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            ),
+        )
+        attrSheetHostView = view
+    }
+
+    private fun unmountAttrSheetHost() {
+        attrSheetHostView?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        attrSheetHostView = null
+    }
+
+    /**
+     * 默认属性弹窗的渲染宿主：Feature 为 null 时不渲染任何内容（透明空层）。
+     * 想完全替换渲染内容的子类，可改为提供自己的 AttrSheet Host（见现有
+     * IllegalEventsHeatLayer 的 mountSheetHost 模式）。
+     */
+    @Composable
+    private fun AttrSheetHost() {
+        val f by _pickedFeature.collectAsState()
+        f?.let { feature ->
+            val config = remember(feature) { attrConfig(feature) }
+            FeatureAttrSheet.Content(
+                feature = feature,
+                config = config,
+                onDismiss = { _pickedFeature.value = null },
+            )
+        }
     }
 
     // =========================================================================================
@@ -299,15 +479,13 @@ abstract class BaseBizeLibreLayer : LibreMapLayer(), RefreshableLayer, Visibilit
             connection?.disconnect()
         }
     }
+
     // =========================================================================================
     // 图层构建助手
     // =========================================================================================
 
     // ---- 热力图 ----
 
-    // 注意：以下 stops 均为未显式类型的 arrayOf val（推断 Array<Expression.Stop>），
-    // spread 进 interpolate vararg 协变安全；子类如需自定义，override 同名 val
-    // 即可（同样不显式声明类型）。
     protected open val heatmapColorStops = arrayOf(
         Expression.stop(0.0, Expression.rgba(33, 102, 172, 0.0)),
         Expression.stop(0.2, Expression.rgba(103, 169, 207, 1.0)),
@@ -368,10 +546,6 @@ abstract class BaseBizeLibreLayer : LibreMapLayer(), RefreshableLayer, Visibilit
 
     // ---- 圆点 ----
 
-    /**
-     * 创建圆点图层
-     * 修复：移除嵌套的 zoom-based interpolate，避免 JNI 表达式错误
-     */
     protected fun circleLayer(
         lyrId: String,
         sourceId: String,
@@ -452,7 +626,7 @@ abstract class BaseBizeLibreLayer : LibreMapLayer(), RefreshableLayer, Visibilit
             }
         }
 
-    // ---- 多边形 / 线（已移除 Fill/Line 上不合法的 text 属性；注记请用 symbolLayer） ----
+    // ---- 多边形 / 线 ----
 
     /** 新建一个多边形填充图层 */
     protected fun fillLayer(

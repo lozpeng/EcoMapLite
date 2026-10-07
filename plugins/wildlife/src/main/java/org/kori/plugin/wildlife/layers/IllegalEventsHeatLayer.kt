@@ -165,14 +165,10 @@ class IllegalEventsHeatLayer : BaseBizeLibreLayer() {
     // =============================================================================================
     // 生命周期（onAttach 基类已自动 loadCollection，无需覆盖）
     // =============================================================================================
-
-    override fun onMapReady(map: MapLibreMap) {
+    override fun onMapReadyInternal(map: MapLibreMap) {
         registerListeners(map)
         mountSheetHost()
-        // 数据先到、地图后就绪时补一次显隐
-        if (isLoaded) {
-            applyVisibilityByZoom(map.cameraPosition.zoom, force = true)
-        }
+        if (isLoaded) applyVisibilityByZoom(map.cameraPosition.zoom, force = true)
     }
 
     override fun onDetach() {

@@ -467,7 +467,7 @@ class PhotoMarkerLayer : BaseBizeLibreLayer() {
         super.onDetach()
     }
 
-    override fun onMapReady(map: MapLibreMap) {
+    override fun onMapReadyInternal(map: MapLibreMap) {
         registerListeners(map)
         mountViewerHost()
         if (isLoaded) applyLayerVisibility()
