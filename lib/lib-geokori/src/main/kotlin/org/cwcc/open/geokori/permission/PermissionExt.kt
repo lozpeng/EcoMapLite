@@ -10,13 +10,21 @@ import android.content.pm.PermissionInfo
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MyLocation
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import timber.log.Timber
 
 private const val TAG = "PermissionGate"
-
-/* ---------------- 基础扩展 ---------------- */
 
 internal tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
@@ -40,6 +48,23 @@ fun Context.openAppSettings() {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
     )
+}
+
+fun Context.canDrawOverlays(): Boolean {
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        Settings.canDrawOverlays(this)
+    } else true
+}
+
+fun Context.openOverlaySettings() {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        startActivity(
+            Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:$packageName")
+            ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+        )
+    }
 }
 
 fun String.permissionLabel(): String = when (this) {
@@ -66,19 +91,45 @@ fun String.permissionLabel(): String = when (this) {
     else -> substringAfterLast('.')
 }
 
-/* ---------------- ★ 从 AndroidManifest 读取运行时权限 ---------------- */
+data class PermissionUiModel(
+    val permission: String,
+    val title: String,
+    val description: String,
+    val icon: ImageVector
+)
 
-/**
- * 读取**宿主 App**（不是插件）的 AndroidManifest 中声明的运行时权限。
- *
- * 关键点：
- *  - 使用 applicationContext，避免 Combolite 插件框架下 LocalContext 被改写为插件 Context
- *  - 通过 PermissionInfo.protectionLevel 过滤出 dangerous 权限
- *  - 剔除在新 SDK 上已失效的权限
- *  - 打印日志，方便定位
- */
+fun String.toPermissionUiModel(): PermissionUiModel {
+    return when (this) {
+        Manifest.permission.CAMERA -> PermissionUiModel(
+            this, "相机", "用于拍摄照片、扫描二维码等", Icons.Default.CameraAlt
+        )
+        Manifest.permission.RECORD_AUDIO -> PermissionUiModel(
+            this, "麦克风", "用于语音输入、发送语音消息", Icons.Default.Mic
+        )
+        Manifest.permission.ACCESS_FINE_LOCATION,
+        Manifest.permission.ACCESS_COARSE_LOCATION -> PermissionUiModel(
+            this, "地理位置（前台）", "用于获取天气和基本定位服务", Icons.Default.LocationOn
+        )
+        Manifest.permission.ACCESS_BACKGROUND_LOCATION -> PermissionUiModel(
+            this, "后台定位（关键）", "为了确保在后台能正常录制您的运动轨迹，请务必在系统弹窗中选择【始终允许】", Icons.Default.MyLocation
+        )
+        Manifest.permission.POST_NOTIFICATIONS -> PermissionUiModel(
+            this, "通知", "用于推送消息，或在后台录制轨迹时显示实时状态", Icons.Default.Notifications
+        )
+        Manifest.permission.READ_EXTERNAL_STORAGE,
+        Manifest.permission.READ_MEDIA_IMAGES -> PermissionUiModel(
+            this, "读取图片", "用于选择头像或上传图片", Icons.Default.Image
+        )
+        Manifest.permission.ACCESS_MEDIA_LOCATION -> PermissionUiModel(
+            this, "照片位置信息", "用于读取照片拍摄时的位置信息", Icons.Default.PhotoCamera
+        )
+        else -> PermissionUiModel(
+            this, permissionLabel(), "需要使用此权限以提供完整功能", Icons.Default.Info
+        )
+    }
+}
+
 fun Context.getDeclaredRuntimePermissions(): List<String> {
-    // ★ 关键：使用 applicationContext 读取宿主包信息
     val app = applicationContext
     val pm = app.packageManager
     val pkgName = app.packageName
@@ -99,20 +150,11 @@ fun Context.getDeclaredRuntimePermissions(): List<String> {
     }
 
     val declared = pkgInfo.requestedPermissions?.toList().orEmpty()
-    Timber.tag(TAG).d("packageName=$pkgName")
-    Timber.tag(TAG).d("declared permissions (%d): %s", declared.size, declared)
 
-    val runtime = declared
-        .filter { perm ->
-            val ok = perm.isDangerousPermission(app)
-            Timber.tag(TAG).d("  %s -> dangerous=%s", perm, ok)
-            ok
-        }
+    return declared
+        .filter { perm -> perm.isDangerousPermission(app) }
         .filterNot { it.isObsoleteOnCurrentSdk() }
         .distinct()
-
-    Timber.tag(TAG).d("runtime permissions (%d): %s", runtime.size, runtime)
-    return runtime
 }
 
 private fun String.isDangerousPermission(context: Context): Boolean = try {
@@ -120,7 +162,6 @@ private fun String.isDangerousPermission(context: Context): Boolean = try {
     (info.protectionLevel and PermissionInfo.PROTECTION_MASK_BASE) ==
             PermissionInfo.PROTECTION_DANGEROUS
 } catch (e: PackageManager.NameNotFoundException) {
-    Timber.tag(TAG).w("permission not found on this SDK: $this")
     false
 }
 
@@ -128,19 +169,17 @@ private fun String.isObsoleteOnCurrentSdk(): Boolean = when (this) {
     Manifest.permission.READ_EXTERNAL_STORAGE,
     Manifest.permission.WRITE_EXTERNAL_STORAGE,
         -> Build.VERSION.SDK_INT >= 33
-
     else -> false
 }
 
-/**
- * ★ 兜底：如果动态读取失败（返回空），使用这份静态列表。
- * 这份列表必须与 AndroidManifest 里的 dangerous 权限保持一致。
- */
 val FALLBACK_RUNTIME_PERMISSIONS: List<String> = buildList {
     add(Manifest.permission.CAMERA)
     add(Manifest.permission.RECORD_AUDIO)
     add(Manifest.permission.ACCESS_FINE_LOCATION)
     add(Manifest.permission.ACCESS_COARSE_LOCATION)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        add(Manifest.permission.ACCESS_BACKGROUND_LOCATION)
+    }
     add(Manifest.permission.ACCESS_MEDIA_LOCATION)
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         add(Manifest.permission.POST_NOTIFICATIONS)

@@ -1,7 +1,9 @@
 package org.cwcc.open.geokori.permission
 
+import android.Manifest
 import android.app.Activity
 import android.content.Context
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
@@ -34,6 +36,11 @@ sealed interface PermissionDialogState {
         val request: PermissionRequest,
         val denied: List<String>,
     ) : PermissionDialogState
+
+    data class BackgroundLocationRationale(
+        val request: PermissionRequest,
+        val backgroundPermission: String,
+    ) : PermissionDialogState
 }
 
 @Stable
@@ -47,6 +54,7 @@ class PermissionController internal constructor(
     internal var launch: ((Array<String>) -> Unit)? = null
 
     private var currentRequest: PermissionRequest? = null
+    private var pendingBackgroundLocation: String? = null
 
     fun request(request: PermissionRequest) {
         currentRequest = request
@@ -57,13 +65,24 @@ class PermissionController internal constructor(
             return
         }
 
-        val needExplain = missing.filter {
+        pendingBackgroundLocation = missing.find { it == Manifest.permission.ACCESS_BACKGROUND_LOCATION }
+        val foregroundPermissions = missing.filter { it != Manifest.permission.ACCESS_BACKGROUND_LOCATION }
+
+        if (foregroundPermissions.isNotEmpty()) {
+            requestPermissions(foregroundPermissions)
+        } else if (pendingBackgroundLocation != null) {
+            dialogState = PermissionDialogState.BackgroundLocationRationale(request, pendingBackgroundLocation!!)
+        }
+    }
+
+    private fun requestPermissions(permissions: List<String>) {
+        val needExplain = permissions.filter {
             activity?.shouldShowPermissionRationale(it) == true
         }
         if (needExplain.isNotEmpty()) {
-            dialogState = PermissionDialogState.Rationale(request, missing)
+            dialogState = PermissionDialogState.Rationale(currentRequest!!, permissions)
         } else {
-            launch?.invoke(missing.toTypedArray())
+            launch?.invoke(permissions.toTypedArray())
         }
     }
 
@@ -87,6 +106,7 @@ class PermissionController internal constructor(
         val req = when (s) {
             is PermissionDialogState.Rationale -> s.request
             is PermissionDialogState.PermanentlyDenied -> s.request
+            is PermissionDialogState.BackgroundLocationRationale -> s.request
             else -> currentRequest
         }
         val denied = when (s) {
@@ -100,10 +120,17 @@ class PermissionController internal constructor(
     internal fun onSystemResult(result: Map<String, Boolean>) {
         val req = currentRequest ?: return
         val denied = result.filterValues { !it }.keys.toList()
+
+        if (denied.isEmpty() && pendingBackgroundLocation != null && !context.isPermissionGranted(pendingBackgroundLocation!!)) {
+            dialogState = PermissionDialogState.BackgroundLocationRationale(req, pendingBackgroundLocation!!)
+            return
+        }
+
         if (denied.isEmpty()) {
             req.onResult?.invoke(true, emptyList())
             return
         }
+
         val canAskAgain = denied.any {
             activity?.shouldShowPermissionRationale(it) == true
         }
@@ -111,6 +138,17 @@ class PermissionController internal constructor(
             PermissionDialogState.Rationale(req, denied)
         } else {
             PermissionDialogState.PermanentlyDenied(req, denied)
+        }
+    }
+
+    internal fun continueFromBackgroundRationale() {
+        val s = dialogState as? PermissionDialogState.BackgroundLocationRationale ?: return
+        dialogState = PermissionDialogState.None
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            context.openAppSettings()
+        } else {
+            launch?.invoke(arrayOf(s.backgroundPermission))
         }
     }
 }
