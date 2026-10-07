@@ -667,98 +667,51 @@ fun rememberGpkgImport(): GpkgImportState {
 // 关闭为两段式（先 hide() 播收起动画、动画完才除名卸载），避免残影/闪断。
 // =================================================================================================
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * GeoPackage 要素属性弹窗：字段完全动态，无附件；共用通用面板 UI。
+ *
+ * 对外 API 保持不变：show(feature) / dismiss() / Host()。
+ *
+ * 说明：原版对"关闭动画期间数据保留"做了特殊处理（_visible 标志 + 依赖
+ * sheetState.isAnimationRunning）。通用面板的 FlexibleBottomSheet / Dialog
+ * 自己会跑完关闭动画再让组件离场，外层无需干预 —— 简化后更稳。
+ */
 object GpkgAttrSheet {
 
     private val _feature = MutableStateFlow<Feature?>(null)
 
-    /** 显示标记：与数据分离，关闭动画期间数据保留，内容不闪空 */
-    private val _visible = MutableStateFlow(false)
-
     fun show(feature: Feature) {
         _feature.value = feature
-        _visible.value = true
     }
 
-    /** 关闭：只标记隐藏（动画播完才真正卸载） */
     fun dismiss() {
-        _visible.value = false
+        _feature.value = null
     }
+
+    private val CONFIG = FeatureAttrSheet.Config(
+        fields = { f ->
+            val o = f.properties()?.asJsonObject
+            o?.entrySet()
+                // __ 前缀为内部合成键（__table/__label 等），不展示
+                ?.filter { !it.key.startsWith("__") }
+                ?.map { entry ->
+                    val v = entry.value?.let { if (it.isJsonNull) "" else it.asString } ?: ""
+                    entry.key to v
+                }
+                ?: emptyList()
+        },
+        attachments = { emptyList() },
+    )
 
     @Composable
     fun Host() {
-        val feature by _feature.collectAsState()
-        val visible by _visible.collectAsState()
-        val sheetState = rememberModalBottomSheetState()
-        val scope = rememberCoroutineScope()
-
-        val f = feature
-        // 隐藏且动画不在跑 → 收起动画已播完，允许真正卸载；中途状态保持挂载
-        if (f == null || (!visible && !sheetState.isVisible && !sheetState.isAnimationRunning)) {
-            return
-        }
-
-        val entries = remember(f) {
-            val o = f.properties()?.asJsonObject
-            o?.entrySet()?.map { it.key to (it.value?.let { v -> if (v.isJsonNull) "" else v.asString } ?: "") }
-                ?: emptyList()
-        }
-
-        ModalBottomSheet(
-            onDismissRequest = {
-                // 手势下滑 / 点 scrim / 返回键 统一入口：先播收起动画，再除名
-                scope.launch {
-                    sheetState.hide()
-                    _feature.value = null
-                }
-            },
-            sheetState = sheetState,
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 8.dp),
-            ) {
-                Text(
-                    text = f.getStringProperty("__table").ifBlank { "要素属性" },
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                Spacer(Modifier.height(8.dp))
-                HorizontalDivider()
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(360.dp),
-                ) {
-                    // __ 前缀为内部合成键（__table/__label 等），不展示
-                    items(entries.filter { !it.first.startsWith("__") }) { (k, v) ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text(
-                                text = k,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.width(120.dp),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Spacer(Modifier.width(12.dp))
-                            Text(
-                                text = v,
-                                style = MaterialTheme.typography.bodyMedium,
-                                modifier = Modifier.weight(1f),
-                            )
-                        }
-                        HorizontalDivider(
-                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
-                        )
-                    }
-                }
-            }
+        val f by _feature.collectAsState()
+        f?.let { feature ->
+            FeatureAttrSheet.Content(
+                feature = feature,
+                config = CONFIG,
+                onDismiss = { dismiss() },
+            )
         }
     }
 }

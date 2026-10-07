@@ -5,58 +5,17 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.Drawable
 import androidx.annotation.DrawableRes
-import androidx.compose.animation.core.Animatable
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.createBitmap
 import androidx.core.graphics.toColorInt
-import coil3.compose.AsyncImage
 import com.google.gson.JsonObject
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.launch
 import org.cwcc.open.geokori.map.BaseBizeLibreLayer
 import org.cwcc.open.geokori.map.GeoKoriLayer
 import org.cwcc.open.geokori.map.MapRuntime
 import org.json.JSONObject
+import org.kori.plugin.wildlife.ui.ElephantAttrSheet
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.style.expressions.Expression
@@ -490,171 +449,5 @@ class ElephantMonitorLayer : BaseBizeLibreLayer() {
     private fun unmountSheetHost() {
         sheetHostView?.let { (it.parent as? android.view.ViewGroup)?.removeView(it) }
         sheetHostView = null
-    }
-}
-
-// =================================================================================================
-// 属性底部弹窗（图片点击全屏，全屏支持双指缩放/拖动，双击放大/还原）
-// =================================================================================================
-
-@OptIn(ExperimentalMaterial3Api::class)
-object ElephantAttrSheet {
-
-    private val _feature = MutableStateFlow<Feature?>(null)
-
-    fun show(feature: Feature) {
-        _feature.value = feature
-    }
-
-    fun dismiss() {
-        _feature.value = null
-    }
-
-    @Composable
-    fun Host() {
-        val feature by _feature.collectAsState()
-        val f = feature ?: return
-        val sheetState = rememberModalBottomSheetState()
-
-        var fullImageUrl by remember { mutableStateOf<String?>(null) }
-
-        ModalBottomSheet(
-            onDismissRequest = { dismiss() },
-            sheetState = sheetState,
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp, vertical = 8.dp)
-                    .verticalScroll(rememberScrollState()),
-            ) {
-                Text(
-                    text = f.getStringProperty("name"),
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                val rowid = f.getStringProperty("rowid")
-                if (rowid.isNotBlank()) {
-                    Text(
-                        text = "编号：$rowid",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-
-                val desc = f.getStringProperty("desc")
-                if (desc.isNotBlank()) {
-                    Text(
-                        text = desc,
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.padding(top = 12.dp),
-                    )
-                }
-
-                // 红外相机的抓拍图（Coil；未引入 Coil 时换自己的图片加载器）
-                val image = f.getStringProperty("image")
-                if (image.isNotBlank()) {
-                    AsyncImage(
-                        model = image,
-                        contentDescription = null,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 12.dp)
-                            .heightIn(max = 260.dp)
-                            .clickable { fullImageUrl = image },   // ★ 点击全屏浏览
-                    )
-                }
-            }
-        }
-
-        // ★ 全屏浏览：黑底 Dialog，双指缩放 + 拖动，双击放大/还原，右上角关闭
-        fullImageUrl?.let { url ->
-            FullscreenImageViewer(
-                url = url,
-                onClose = { fullImageUrl = null },
-            )
-        }
-    }
-}
-
-/**
- * 全屏图片查看器
- *  · 双指捏合缩放（1x~6x）+ 单指拖动
- *  · 双击：放大到 2.5x / 还原 1x（带缓动动画）
- *  · 右上角关闭按钮
- */
-@Composable
-private fun FullscreenImageViewer(
-    url: String,
-    onClose: () -> Unit,
-) {
-    Dialog(
-        onDismissRequest = onClose,
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            decorFitsSystemWindows = false,
-        ),
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.Black),
-        ) {
-            var scale by remember { mutableFloatStateOf(1f) }
-            var offset by remember { mutableStateOf(Offset.Zero) }
-
-            val animScale = remember { Animatable(1f) }
-            val scope = rememberCoroutineScope()
-            var zoomed by remember { mutableStateOf(false) }
-
-            AsyncImage(
-                model = url,
-                contentDescription = null,
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .graphicsLayer {
-                        scaleX = scale
-                        scaleY = scale
-                        translationX = offset.x
-                        translationY = offset.y
-                    }
-                    // ★ 顺序1：变换手势优先 —— 只消费产生位移/缩放的事件，
-                    //    轻点/双击事件不被它消费，自然穿透到后面的 tap 检测
-                    .pointerInput(Unit) {
-                        detectTransformGestures { _, pan, zoom, _ ->
-                            if (animScale.isRunning) return@detectTransformGestures
-                            scale = (scale * zoom).coerceIn(1f, 6f)
-                            offset = if (scale > 1f) offset + pan else Offset.Zero
-                        }
-                    }
-                    // ★ 顺序2：双击检测（轻点事件穿透到这里）
-                    .pointerInput(Unit) {
-                        detectTapGestures(
-                            onDoubleTap = {
-                                if (animScale.isRunning) return@detectTapGestures
-                                zoomed = !zoomed
-                                scope.launch {
-                                    val target = if (zoomed) 2.5f else 1f
-                                    animScale.snapTo(scale)
-                                    animScale.animateTo(target) { scale = value }  // 每帧回写渲染源
-                                    if (!zoomed) offset = Offset.Zero
-                                }
-                            },
-                        )
-                    },
-            )
-
-            IconButton(
-                onClick = onClose,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(12.dp),
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Close,
-                    contentDescription = "关闭",
-                    tint = Color.White,
-                )
-            }
-        }
     }
 }
