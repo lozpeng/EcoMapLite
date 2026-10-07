@@ -106,6 +106,8 @@ enum class ToolbarPosition {
  *    一起滑出屏幕并隐藏，仅保留一个小拖动栏；向上拖动（或点击）小拖动栏可整体恢复。
  * 7. ★ quickActions 参数类型放宽为 [QuickActionSpec]——插件自定义 Action
  *    （如 wildlife 的 WfBizAction）可直接接入，不再局限于框架 QuickAction。
+ * 8. ★ 底部模式 + Sheet 已 Hidden 时，ToolBar 上滑唤出 Sheet，下滑隐藏整个组件；
+ *    下滑判定同时支持距离阈值与速度阈值，手感与上滑一致。
  */
 @Composable
 fun GeoKoriCenter(
@@ -341,9 +343,14 @@ fun GeoKoriCenter(
     // 记录"经历过轨迹浮层激活"，用于退出时恢复
     var wasTrackOverlayActive by remember { mutableStateOf(false) }
 
-    // ★ ToolBar 上拉唤出 Sheet：拖动累计量（px）+ 触发阈值
+    // ★ ToolBar 上拉唤出 Sheet / 下拉隐藏组件：拖动累计量（px）+ 触发阈值
     var toolbarDragAcc by remember { mutableFloatStateOf(0f) }
+    // 上滑唤出 Sheet 的阈值（保持原值）
     val toolbarRevealThresholdPx = with(density) { 48.dp.toPx() }
+    // ★ 下滑隐藏组件的阈值：ToolBar 高度仅 56dp，48dp 太苛刻 → 降到 20dp
+    val toolbarHideThresholdPx = with(density) { 20.dp.toPx() }
+    // ★ 下滑速度阈值（px/s）：快速下滑即使距离不足也触发
+    val toolbarHideVelocityPx = with(density) { 800.dp.toPx() }
 
 
     // ★ key 同时观察 currentValue：隐藏动画 settle 到 Hidden 的瞬间会再触发本 effect，
@@ -454,7 +461,7 @@ fun GeoKoriCenter(
                         modifier = Modifier
                             .fillMaxWidth()
                             .align(Alignment.BottomCenter)
-                            .padding(bottom = toolbarHeight)   // 动画值，与 ToolBar 同步伸缩
+                            .padding(bottom = toolbarHeight)
                     ) {
                         FlexibleBottomSheet(
                             sheetState = sheetState,
@@ -495,22 +502,29 @@ fun GeoKoriCenter(
                                 if (adaptiveToolbarWidth != null) Modifier.width(adaptiveToolbarWidth)
                                 else Modifier.fillMaxWidth()
                             )
-                            // ★ Sheet 隐藏时，ToolBar 区域上拉 → 唤出轻度展开
+                            // ★ Sheet 隐藏时，ToolBar 区域上滑 → 唤出轻度展开；
+                            //   下滑 → 整体隐藏（距离或速度任一达标即触发，手感与上滑一致）。
                             .draggable(
                                 state = rememberDraggableState { d -> toolbarDragAcc += -d },
                                 orientation = Orientation.Vertical,
                                 enabled = sheetState.currentValue == FlexibleSheetValue.Hidden,
-                                onDragStopped = {
+                                onDragStopped = { velocity ->
+                                    // draggable 的 velocity 方向与手势同向：
+                                    //   向下滑动 → velocity > 0
+                                    //   向上滑动 → velocity < 0
+                                    val slidingDown = velocity > toolbarHideVelocityPx
+                                    val slidingUp = velocity < -toolbarHideVelocityPx
+
                                     when {
-                                        // 上滑：唤出 Sheet（原有逻辑，保持不变）
-                                        toolbarDragAcc > toolbarRevealThresholdPx &&
-                                                sheetState.currentValue == FlexibleSheetValue.Hidden -> {
+                                        // 上滑：距离或速度任一达标 → 唤出 Sheet
+                                        sheetState.currentValue == FlexibleSheetValue.Hidden &&
+                                                (toolbarDragAcc > toolbarRevealThresholdPx || slidingUp) -> {
                                             scope.launch { sheetState.slightlyExpand() }
                                         }
-                                        // ★ 下滑：整体隐藏（新增，仅底部模式且 Sheet 已 Hidden 时生效）
-                                        toolbarDragAcc < -toolbarRevealThresholdPx &&
-                                                sheetState.currentValue == FlexibleSheetValue.Hidden &&
-                                                dragToHideEnabled -> {
+                                        // 下滑：距离或速度任一达标 → 整体隐藏
+                                        sheetState.currentValue == FlexibleSheetValue.Hidden &&
+                                                dragToHideEnabled &&
+                                                (toolbarDragAcc < -toolbarHideThresholdPx || slidingDown) -> {
                                             fullyHidden = true
                                         }
                                     }
@@ -526,7 +540,6 @@ fun GeoKoriCenter(
                         isVisible = internalVisible,
                         autoHideOnMapClick = false,
                     )
-
                 }
 
                 ToolbarPosition.Top -> {
