@@ -3,17 +3,27 @@ package org.kori.plugin.wildlife.ui
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color as AndroidColor
+import android.graphics.Matrix
+import android.graphics.SurfaceTexture
 import android.graphics.drawable.ColorDrawable
+import android.media.MediaPlayer
 import android.net.Uri
-import android.view.View
+import android.view.Surface
+import android.view.TextureView
 import android.widget.Toast
-import android.widget.VideoView
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.VectorConverter
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -54,6 +64,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -78,6 +89,7 @@ import coil3.compose.AsyncImage
 import org.cwcc.open.geokori.ui.material3.bottomsheet.FlexibleBottomSheet
 import org.cwcc.open.geokori.ui.material3.bottomsheet.core.rememberFlexibleBottomSheetState
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -99,10 +111,16 @@ import kotlin.time.Duration.Companion.milliseconds
  *  · 视频：预览态点按画面播放/暂停，右上角"[ 全屏 ]"进入全屏播放；
  *  · 全屏播放：默认暂停，圆圈进度条（可拖动 seek）。
  *
- * 渲染防护：
- *  · VideoView（SurfaceView）在 prepare 完成前 INVISIBLE，防止 surface 打孔透出下层 UI；
- *  · 全屏 Dialog 窗口强制不透明黑底（decorativeFitsSystemWindows=false + ColorDrawable(BLACK)），
- *    图片 Fit 留白区域与系统栏区域均为纯黑，不透出任何下层内容。
+ * 视频渲染：
+ *  · 使用 TextureView + MediaPlayer（而不是 VideoView）——
+ *    VideoView 内部是 SurfaceView，会在窗口上"打洞"独立合成，Compose 的覆盖层
+ *    物理上盖不住，会出现"播放中透明、暂停时不透明"的穿透问题；
+ *    TextureView 是普通 View，走正常窗口合成，谁后画谁在上，不再穿透。
+ *  · 不再使用 setZOrderOnTop —— 它会把 surface 顶到窗口之上，是穿透的元凶。
+ *  · 使用 FitTextureView 按视频宽高比做 letterbox 适配，避免全屏拉伸。
+ *  · "未播放覆盖层"仅作为"尚未显示首帧"的视觉占位，不再是防穿透的救命稻草。
+ *  · 全屏 Dialog 窗口仍强制不透明黑底（decorFitsSystemWindows=false + ColorDrawable(BLACK)），
+ *    用于保证图片 Fit 留白区域与系统栏区域为纯黑。
  */
 object IllegalEventAttrSheet {
 
@@ -501,7 +519,55 @@ object IllegalEventAttrSheet {
     }
 
     // =============================================================================================
-    // 预览态视频播放：点按画面播放/暂停；右上角"[ 全屏 ]"
+    // 视频渲染：FitTextureView —— 按视频宽高比 letterbox 适配的 TextureView
+    // =============================================================================================
+
+    /**
+     * 按视频宽高比做 letterbox 适配的 TextureView。
+     *
+     * TextureView 是普通 View，本身不感知视频宽高比，直接填满会被拉伸。
+     * 这里在视频尺寸 / View 尺寸变化时用 setTransform(Matrix) 把内容缩放到
+     * Fit 居中显示 —— 宽高比不符时上下或左右留黑边，绝不拉伸。
+     */
+    private class FitTextureView(context: Context) : TextureView(context) {
+
+        private var videoW = 0
+        private var videoH = 0
+
+        /** MediaPlayer 汇报视频尺寸时调用；重复值会被忽略 */
+        fun setVideoSize(w: Int, h: Int) {
+            if (w == videoW && h == videoH) return
+            videoW = w
+            videoH = h
+            applyFit()
+        }
+
+        override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+            super.onSizeChanged(w, h, oldw, oldh)
+            // View 尺寸变化（进入全屏 / 旋转）后重新适配
+            applyFit()
+        }
+
+        private fun applyFit() {
+            if (videoW <= 0 || videoH <= 0 || width <= 0 || height <= 0) return
+            val viewRatio = width.toFloat() / height.toFloat()
+            val videoRatio = videoW.toFloat() / videoH.toFloat()
+            val matrix = Matrix()
+            val cx = width / 2f
+            val cy = height / 2f
+            if (videoRatio > viewRatio) {
+                // 视频比 View 更宽：水平撑满，垂直缩放（上下留黑边）
+                matrix.setScale(1f, viewRatio / videoRatio, cx, cy)
+            } else {
+                // 视频比 View 更窄：垂直撑满，水平缩放（左右留黑边）
+                matrix.setScale(videoRatio / viewRatio, 1f, cx, cy)
+            }
+            setTransform(matrix)
+        }
+    }
+
+    // =============================================================================================
+    // 预览态视频播放（FitTextureView + MediaPlayer）：点按画面播放/暂停；右上角"[ 全屏 ]"
     // =============================================================================================
 
     @Composable
@@ -512,48 +578,106 @@ object IllegalEventAttrSheet {
         modifier: Modifier = Modifier,
     ) {
         var playing by remember { mutableStateOf(false) }
-        var videoView by remember { mutableStateOf<VideoView?>(null) }
+        var prepared by remember { mutableStateOf(false) }
+        var player by remember { mutableStateOf<MediaPlayer?>(null) }
+        // 播放意图：用户可能在 prepare 完成前就点了播放，记下来，onPrepared 补播
+        var wantPlay by remember { mutableStateOf(false) }
 
         fun toggle() {
-            videoView?.let {
-                if (it.isPlaying) {
-                    it.pause()
-                    playing = false
-                } else {
-                    it.start()
-                    playing = true
-                }
+            val mp = player
+            if (mp == null || !prepared) {
+                wantPlay = !wantPlay
+                return
+            }
+            if (playing) {
+                runCatching { mp.pause() }
+                playing = false
+                wantPlay = false
+            } else {
+                runCatching { mp.start() }
+                playing = true
+                wantPlay = true
             }
         }
 
         // 切走自动暂停
         LaunchedEffect(active) {
             if (!active) {
-                videoView?.pause()
+                player?.let { runCatching { it.pause() } }
                 playing = false
+                wantPlay = false
             }
         }
 
-        // 不透明兜底底：VideoView prepare 完成前是 INVISIBLE 的，
-        // 此背景负责填充"未就绪"窗口，杜绝 SurfaceView 打孔透出下层 UI
+        // 组合销毁兜底释放（onSurfaceTextureDestroyed 已经释放过一次，此处幂等）
+        DisposableEffect(Unit) {
+            onDispose {
+                player?.let { runCatching { it.release() } }
+                player = null
+            }
+        }
+
         Box(modifier.background(Color(0xFF1A1A1A))) {
             AndroidView(
                 factory = { ctx ->
-                    VideoView(ctx).apply {
-                        // ★ 关键：prepare 完成前不可见 → Surface 不打孔 → 透出的是本 Box 深色背景
-                        visibility = View.INVISIBLE
-                        setVideoPath(url)
-                        setOnPreparedListener { mp ->
-                            visibility = View.VISIBLE
-                            if (playing) {
-                                mp.start()
-                            } else {
-                                // 抓取首帧后暂停，避免就绪后仍是一块纯黑
-                                runCatching { mp.start(); mp.pause() }
+                    FitTextureView(ctx).apply {
+                        surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                            override fun onSurfaceTextureAvailable(
+                                st: SurfaceTexture, w: Int, h: Int,
+                            ) {
+                                // MediaPlayer 只能在 Surface 就绪后创建
+                                player?.let { runCatching { it.release() } }
+                                val mp = MediaPlayer()
+                                player = mp
+                                runCatching {
+                                    mp.setDataSource(url)
+                                    mp.setSurface(Surface(st))
+
+                                    // ★ 视频尺寸就绪后回填，触发 letterbox 适配
+                                    mp.setOnVideoSizeChangedListener { _, vw, vh ->
+                                        setVideoSize(vw, vh)
+                                    }
+
+                                    mp.setOnPreparedListener { m ->
+                                        prepared = true
+                                        if (wantPlay) {
+                                            runCatching { m.start() }
+                                            playing = true
+                                        }
+                                    }
+                                    mp.setOnCompletionListener {
+                                        playing = false
+                                        wantPlay = false
+                                    }
+                                    mp.setOnErrorListener { _, _, _ ->
+                                        playing = false
+                                        prepared = false
+                                        wantPlay = false
+                                        true
+                                    }
+                                    mp.prepareAsync()
+                                }.onFailure {
+                                    runCatching { mp.release() }
+                                    player = null
+                                    prepared = false
+                                }
                             }
+
+                            override fun onSurfaceTextureSizeChanged(
+                                st: SurfaceTexture, w: Int, h: Int,
+                            ) = Unit
+
+                            override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                                player?.let { runCatching { it.release() } }
+                                player = null
+                                playing = false
+                                prepared = false
+                                wantPlay = false
+                                return true
+                            }
+
+                            override fun onSurfaceTextureUpdated(st: SurfaceTexture) = Unit
                         }
-                        setOnCompletionListener { playing = false }
-                        videoView = this
                     }
                 },
                 modifier = Modifier.fillMaxSize(),
@@ -566,8 +690,16 @@ object IllegalEventAttrSheet {
                     .pointerInput(Unit) { detectTapGestures(onTap = { toggle() }) },
             )
 
+            // 未播放时的视觉遮罩 + 播放按钮（TextureView 无渲染孔，这里纯视觉）
             if (!playing) {
-                PlayOverlay(Modifier.align(Alignment.Center))
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(Color(0xFF1A1A1A)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    PlayOverlay()
+                }
             }
 
             // ★ "[ 全屏 ]" 小提示：点击暂停预览并进入全屏播放
@@ -581,17 +713,14 @@ object IllegalEventAttrSheet {
                     .background(Color(0x99000000), RoundedCornerShape(6.dp))
                     .pointerInput(Unit) {
                         detectTapGestures(onTap = {
-                            videoView?.pause()
+                            player?.let { runCatching { it.pause() } }
                             playing = false
+                            wantPlay = false
                             onOpenFullscreen()
                         })
                     }
                     .padding(horizontal = 8.dp, vertical = 4.dp),
             )
-        }
-
-        DisposableEffect(Unit) {
-            onDispose { videoView?.stopPlayback() }
         }
     }
 
@@ -623,8 +752,13 @@ object IllegalEventAttrSheet {
         initialPage: Int,
         onClose: () -> Unit,
     ) {
+        if (attachments.isEmpty()) {
+            onClose()
+            return
+        }
+
         val pagerState = rememberPagerState(
-            initialPage = initialPage.coerceIn(0, attachments.lastIndex),
+            initialPage = initialPage.coerceIn(0, attachments.lastIndex.coerceAtLeast(0)),
             pageCount = { attachments.size },
         )
 
@@ -636,13 +770,21 @@ object IllegalEventAttrSheet {
                 decorFitsSystemWindows = false,
             ),
         ) {
-            // ★ 关键：把 Dialog 窗口背景改为不透明黑。
-            // Compose Dialog 默认窗底是平台对话框的半透明背景，
-            // 内容 Box 之外（状态栏区域 / 图片 Fit 留白以外的缝隙）会透出下层 UI。
+            // ★ 把 Dialog 窗口背景改为不透明黑。
+            // Compose Dialog 创建时会把窗口背景设为透明；图片 Fit 留白区、系统栏
+            // 区域在未填充内容时会透出下层 Activity UI。窗口黑底保证这些区域始终纯黑。
+            // 沿 parent 链向上查找 DialogWindowProvider（不同 compose 版本层级不同，
+            // 只查直接父级可能静默失败），并给 decorView 再加一层黑底双保险。
             val view = LocalView.current
             LaunchedEffect(Unit) {
-                val window = (view.parent as? DialogWindowProvider)?.window ?: return@LaunchedEffect
-                window.setBackgroundDrawable(ColorDrawable(AndroidColor.BLACK))
+                val window = generateSequence(view.parent) { it.parent }
+                    .filterIsInstance<DialogWindowProvider>()
+                    .firstOrNull()
+                    ?.window
+                if (window != null) {
+                    window.setBackgroundDrawable(ColorDrawable(AndroidColor.BLACK))
+                    window.decorView.setBackgroundColor(AndroidColor.BLACK)
+                }
             }
 
             Box(
@@ -695,30 +837,46 @@ object IllegalEventAttrSheet {
     }
 
     /**
-     * 全屏视频播放：默认暂停（显示播放按钮），点按画面播放/暂停；
-     * 黑底兜底未首帧透明；播放意图早于 prepare 时就绪后补播；切走自动暂停。
+     * 全屏视频播放（FitTextureView + MediaPlayer）：
+     * 默认暂停（显示播放按钮），点按画面播放/暂停；
+     * 黑底兜底未首帧；播放意图早于 prepare 时就绪后补播；切走自动暂停。
      */
     @Composable
     private fun VideoPlayer(url: String, active: Boolean, modifier: Modifier = Modifier) {
         var playing by remember { mutableStateOf(false) }
-        var videoView by remember { mutableStateOf<VideoView?>(null) }
+        var prepared by remember { mutableStateOf(false) }
+        var player by remember { mutableStateOf<MediaPlayer?>(null) }
+        var wantPlay by remember { mutableStateOf(false) }
 
         fun toggle() {
-            videoView?.let {
-                if (it.isPlaying) {
-                    it.pause()
-                    playing = false
-                } else {
-                    it.start()
-                    playing = true
-                }
+            val mp = player
+            if (mp == null || !prepared) {
+                wantPlay = !wantPlay
+                return
+            }
+            if (playing) {
+                runCatching { mp.pause() }
+                playing = false
+                wantPlay = false
+            } else {
+                runCatching { mp.start() }
+                playing = true
+                wantPlay = true
             }
         }
 
         LaunchedEffect(active) {
             if (!active) {
-                videoView?.pause()
+                player?.let { runCatching { it.pause() } }
                 playing = false
+                wantPlay = false
+            }
+        }
+
+        DisposableEffect(Unit) {
+            onDispose {
+                player?.let { runCatching { it.release() } }
+                player = null
             }
         }
 
@@ -728,20 +886,63 @@ object IllegalEventAttrSheet {
         ) {
             AndroidView(
                 factory = { ctx ->
-                    VideoView(ctx).apply {
-                        // ★ 同预览：prepare 完成前 INVISIBLE，杜绝打孔透明
-                        visibility = View.INVISIBLE
-                        setVideoPath(url)
-                        setOnPreparedListener { mp ->
-                            visibility = View.VISIBLE
-                            if (playing) {
-                                mp.start()
-                            } else {
-                                runCatching { mp.start(); mp.pause() }
+                    FitTextureView(ctx).apply {
+                        surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+                            override fun onSurfaceTextureAvailable(
+                                st: SurfaceTexture, w: Int, h: Int,
+                            ) {
+                                player?.let { runCatching { it.release() } }
+                                val mp = MediaPlayer()
+                                player = mp
+                                runCatching {
+                                    mp.setDataSource(url)
+                                    mp.setSurface(Surface(st))
+
+                                    // ★ 视频尺寸就绪后回填，触发 letterbox 适配
+                                    mp.setOnVideoSizeChangedListener { _, vw, vh ->
+                                        setVideoSize(vw, vh)
+                                    }
+
+                                    mp.setOnPreparedListener { m ->
+                                        prepared = true
+                                        if (wantPlay) {
+                                            runCatching { m.start() }
+                                            playing = true
+                                        }
+                                    }
+                                    mp.setOnCompletionListener {
+                                        playing = false
+                                        wantPlay = false
+                                    }
+                                    mp.setOnErrorListener { _, _, _ ->
+                                        playing = false
+                                        prepared = false
+                                        wantPlay = false
+                                        true
+                                    }
+                                    mp.prepareAsync()
+                                }.onFailure {
+                                    runCatching { mp.release() }
+                                    player = null
+                                    prepared = false
+                                }
                             }
+
+                            override fun onSurfaceTextureSizeChanged(
+                                st: SurfaceTexture, w: Int, h: Int,
+                            ) = Unit
+
+                            override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                                player?.let { runCatching { it.release() } }
+                                player = null
+                                playing = false
+                                prepared = false
+                                wantPlay = false
+                                return true
+                            }
+
+                            override fun onSurfaceTextureUpdated(st: SurfaceTexture) = Unit
                         }
-                        setOnCompletionListener { playing = false }
-                        videoView = this
                     }
                 },
                 modifier = Modifier.fillMaxSize(),
@@ -754,23 +955,27 @@ object IllegalEventAttrSheet {
                     .pointerInput(Unit) { detectTapGestures(onTap = { toggle() }) },
             )
 
+            // 未播放时的黑底遮罩 + 播放按钮
             if (!playing) {
-                PlayOverlay(Modifier.align(Alignment.Center))
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(Color.Black),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    PlayOverlay()
+                }
             }
 
             // ★ 底部控制条：播放/暂停 + 圆圈进度条（可拖动）+ 时间
             VideoControls(
-                videoView = videoView,
+                player = player,
                 playing = playing,
                 onTogglePlay = ::toggle,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .navigationBarsPadding(),
             )
-        }
-
-        DisposableEffect(Unit) {
-            onDispose { videoView?.stopPlayback() }
         }
     }
 
@@ -781,38 +986,77 @@ object IllegalEventAttrSheet {
 
     @Composable
     private fun ZoomableImage(model: Any, modifier: Modifier = Modifier) {
-        var scale by remember { mutableFloatStateOf(1f) }
-        var offset by remember { mutableStateOf(Offset.Zero) }
+        val scope = rememberCoroutineScope()
+        // Animatable：手势中 snapTo 逐帧跟手，双击 animateTo 弹性动画
+        val scale = remember { Animatable(1f) }
+        val offset = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
 
         BoxWithConstraints(
             modifier = modifier
                 .clipToBounds()
-                // ★ 关键：以 scale 为 key，缩放状态变化时重启手势块；
-                //    1x 时不挂 detectTransformGestures，拖动事件透传给 Pager 切页
-                .pointerInput(scale) {
-                    if (scale > 1f) {
-                        detectTransformGestures { _, pan, zoom, _ ->
-                            scale = (scale * zoom).coerceIn(1f, 5f)
-                            offset += pan
-                        }
+                // ★ 常驻手势块（key = Unit，永不重启）：
+                //    手势起始已放大，或本手势出现过捏合 → 消费事件归图片（缩放/平移）；
+                //    否则不消费 → 事件透传给外层 Pager 左右切页。
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        // ★ requireUnconsumed = false 是关键：
+                        //   同一节点上的 detectTapGestures 会先消费 down 事件，
+                        //   若用默认值 true，此处永远等不到手势起点，
+                        //   双指缩放 / 放大后拖动会全部失效。
+                        awaitFirstDown(requireUnconsumed = false)
+                        var takeover = scale.value > 1.001f
+                        // 手势内的运行值：awaitEachGesture 是受限协程作用域，
+                        // 不能直接调用 Animatable.snapTo（挂起函数），改用外层 scope.launch 执行
+                        var curScale = scale.value
+                        var curOffset = offset.value
+                        do {
+                            val event = awaitPointerEvent()
+                            val zoomChange = event.calculateZoom()
+                            val panChange = event.calculatePan()
+                            if (!takeover && zoomChange != 1f) takeover = true
+                            if (takeover) {
+                                // 消费本次变化，阻止 Pager 抢手势
+                                event.changes.forEach { it.consume() }
+                                curScale = (curScale * zoomChange).coerceIn(1f, 5f)
+                                curOffset = if (curScale > 1f) curOffset + panChange
+                                else Offset.Zero
+                                val s = curScale
+                                val o = curOffset
+                                scope.launch {
+                                    scale.snapTo(s)
+                                    offset.snapTo(o)
+                                }
+                            }
+                        } while (event.changes.any { it.pressed })
                     }
                 }
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onDoubleTap = {
-                            scale = if (scale > 1f) 1f else 2.5f
-                            if (scale == 1f) offset = Offset.Zero
+                            scope.launch {
+                                // 不写泛型，让编译器在 scale(Float)/offset(Offset)
+                                // 各自的调用点推断出正确类型
+                                val stiffness = Spring.StiffnessMediumLow
+                                if (scale.value > 1f) {
+                                    // 还原
+                                    scale.animateTo(1f, spring(stiffness = stiffness))
+                                    offset.animateTo(Offset.Zero, spring(stiffness = stiffness))
+                                } else {
+                                    // 放大到 2.5x
+                                    scale.animateTo(2.5f, spring(stiffness = stiffness))
+                                }
+                            }
                         },
                     )
                 },
             contentAlignment = Alignment.Center,
         ) {
             // 平移限位：不超过放大后多出的半幅
-            val maxX = (constraints.maxWidth * (scale - 1f)) / 2f
-            val maxY = (constraints.maxHeight * (scale - 1f)) / 2f
+            val maxX = (constraints.maxWidth * (scale.value - 1f)) / 2f
+            val maxY = (constraints.maxHeight * (scale.value - 1f)) / 2f
             val clamped = Offset(
-                x = offset.x.coerceIn(-maxX, maxX),
-                y = offset.y.coerceIn(-maxY, maxY),
+                x = offset.value.x.coerceIn(-maxX, maxX),
+                y = offset.value.y.coerceIn(-maxY, maxY),
             )
             AsyncImage(
                 model = model,
@@ -820,8 +1064,8 @@ object IllegalEventAttrSheet {
                 modifier = Modifier
                     .fillMaxSize()
                     .graphicsLayer(
-                        scaleX = scale,
-                        scaleY = scale,
+                        scaleX = scale.value,
+                        scaleY = scale.value,
                         translationX = clamped.x,
                         translationY = clamped.y,
                     ),
@@ -921,7 +1165,7 @@ object IllegalEventAttrSheet {
 
     @Composable
     private fun VideoControls(
-        videoView: VideoView?,
+        player: MediaPlayer?,
         playing: Boolean,
         onTogglePlay: () -> Unit,
         modifier: Modifier = Modifier,
@@ -930,15 +1174,17 @@ object IllegalEventAttrSheet {
         var positionMs by remember { mutableStateOf(0) }
         var dragging by remember { mutableStateOf(false) }
 
-        // 播放中轮询进度（拖动中不覆盖，由拖动回显接管）
-        LaunchedEffect(playing, videoView) {
+        // 播放中轮询进度（拖动中不覆盖，由拖动回显接管）；
+        // key = player，切页 / 重建时重启循环；MediaPlayer 非法状态下取值会抛异常，用 runCatching 防御
+        LaunchedEffect(player) {
             while (true) {
                 delay(500)
-                videoView?.let { vv ->
-                    if (!dragging) {
-                        positionMs = vv.currentPosition.coerceAtLeast(0)
-                        durationMs = vv.duration.coerceAtLeast(0)
-                    }
+                val mp = player ?: continue
+                if (!dragging) {
+                    positionMs = runCatching { mp.currentPosition }
+                        .getOrDefault(0).coerceAtLeast(0)
+                    durationMs = runCatching { mp.duration }
+                        .getOrDefault(0).coerceAtLeast(0)
                 }
             }
         }
@@ -975,7 +1221,7 @@ object IllegalEventAttrSheet {
                     positionMs = ms   // 拖动时时间与滑块实时跟随
                 },
                 onSeekCommit = { ms ->
-                    runCatching { videoView?.seekTo(ms) }
+                    player?.let { runCatching { it.seekTo(ms) } }
                     positionMs = ms
                     dragging = false
                 },
