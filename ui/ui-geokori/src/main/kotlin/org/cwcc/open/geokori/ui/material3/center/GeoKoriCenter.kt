@@ -501,10 +501,18 @@ fun GeoKoriCenter(
                                 orientation = Orientation.Vertical,
                                 enabled = sheetState.currentValue == FlexibleSheetValue.Hidden,
                                 onDragStopped = {
-                                    if (toolbarDragAcc > toolbarRevealThresholdPx &&
-                                        sheetState.currentValue == FlexibleSheetValue.Hidden
-                                    ) {
-                                        scope.launch { sheetState.slightlyExpand() }
+                                    when {
+                                        // 上滑：唤出 Sheet（原有逻辑，保持不变）
+                                        toolbarDragAcc > toolbarRevealThresholdPx &&
+                                                sheetState.currentValue == FlexibleSheetValue.Hidden -> {
+                                            scope.launch { sheetState.slightlyExpand() }
+                                        }
+                                        // ★ 下滑：整体隐藏（新增，仅底部模式且 Sheet 已 Hidden 时生效）
+                                        toolbarDragAcc < -toolbarRevealThresholdPx &&
+                                                sheetState.currentValue == FlexibleSheetValue.Hidden &&
+                                                dragToHideEnabled -> {
+                                            fullyHidden = true
+                                        }
                                     }
                                     toolbarDragAcc = 0f
                                 },
