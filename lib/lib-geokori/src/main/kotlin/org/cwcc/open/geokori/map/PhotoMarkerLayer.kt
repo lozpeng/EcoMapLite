@@ -70,6 +70,7 @@ import org.maplibre.geojson.Point
 import java.io.File
 import java.io.FileOutputStream
 import kotlin.math.roundToInt
+import androidx.core.net.toUri
 
 /**
  * 系统照片标注图层（框架级 · 单实例）。
@@ -710,7 +711,7 @@ object PhotoIndex {
      * 回落 ImageDecoder（API 28+ 原生支持 HEIC/AVIF）。真实异常单次记录。
      */
     fun decodeSampled(context: Context, uri: String, maxEdge: Int): Bitmap? {
-        val parsed = Uri.parse(uri)
+        val parsed = uri.toUri()
 
         // 阶段 1：BitmapFactory 采样解码（省内存）。
         // ★ 注意：不得在这里用非局部 return —— 会直接跳出函数、跳过阶段 2 兜底。
